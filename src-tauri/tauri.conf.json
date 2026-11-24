@@ -22,6 +22,20 @@
         "skipTaskbar": true,
         "shadow": false,
         "dragDropEnabled": true
+      },
+      {
+        "title": "Lyrics - MS Island",
+        "label": "lyrics",
+        "url": "index.html?mode=lyrics",
+        "width": 440,
+        "height": 580,
+        "visible": false,
+        "resizable": true,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": false,
+        "shadow": false
       }
     ],
     "security": {

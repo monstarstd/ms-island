@@ -21,10 +21,7 @@ use system_tools::{
 };
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{
-    AppHandle, DragDropEvent, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder,
-    WindowEvent,
-};
+use tauri::{AppHandle, DragDropEvent, Emitter, Manager, State, WindowEvent};
 use weather::WeatherInfo;
 
 /// Poison-safe mutex helper so a panic on one thread can never cascade across threads
@@ -48,7 +45,6 @@ struct AppState {
     is_lyrics_open: Arc<Mutex<bool>>,
     clipboard_history: Arc<Mutex<ClipboardSyncPayload>>,
     auto_hide_fullscreen: Arc<AtomicBool>,
-    own_hwnds: Arc<Mutex<Vec<isize>>>,
 }
 
 // -----------------------------------------------------------------------------
@@ -145,71 +141,11 @@ fn center_island_on_primary_monitor(app: &AppHandle) {
     }
 }
 
-fn get_or_create_lyrics_window(app: &AppHandle, state: &AppState) -> Option<tauri::WebviewWindow> {
-    if let Some(existing) = app.get_webview_window("lyrics") {
-        return Some(existing);
-    }
-
-    let win = WebviewWindowBuilder::new(
-        app,
-        "lyrics",
-        WebviewUrl::App("index.html?mode=lyrics".into()),
-    )
-    .title("Lyrics - MS Island")
-    .inner_size(440.0, 580.0)
-    .visible(false)
-    .resizable(true)
-    .decorations(false)
-    .transparent(true)
-    .always_on_top(true)
-    .skip_taskbar(false)
-    .shadow(false)
-    .build()
-    .ok()?;
-
-    if let Ok(h) = win.hwnd() {
-        let mut hwnds = lock_safe(&state.own_hwnds);
-        let val = h.0 as isize;
-        if !hwnds.contains(&val) {
-            hwnds.push(val);
-        }
-    }
-
-    if let Ok(Some(monitor)) = app.primary_monitor() {
-        let screen_size = monitor.size();
-        let screen_w = screen_size.width as i32;
-        let screen_h = screen_size.height as i32;
-        let lyrics_w = win.outer_size().map(|s| s.width as i32).unwrap_or(440);
-        let lyrics_h = win.outer_size().map(|s| s.height as i32).unwrap_or(580);
-        let lyrics_x = (screen_w - lyrics_w - 40).max(20);
-        let lyrics_y = ((screen_h - lyrics_h) / 2).max(40);
-        let _ = win.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
-            x: lyrics_x,
-            y: lyrics_y,
-        }));
-    }
-
-    let win_clone = win.clone();
-    let app_close = app.clone();
-    win.on_window_event(move |event| {
-        if let WindowEvent::CloseRequested { api, .. } = event {
-            api.prevent_close();
-            let _ = win_clone.hide();
-            if let Some(st) = app_close.try_state::<AppState>() {
-                *lock_safe(&st.is_lyrics_open) = false;
-            }
-            let _ = app_close.emit("lyrics-visibility-changed", false);
-        }
-    });
-
-    Some(win)
-}
-
 #[tauri::command]
 fn toggle_lyrics_window(app: AppHandle, state: State<AppState>) -> bool {
     let mut open_lock = lock_safe(&state.is_lyrics_open);
 
-    if let Some(lyrics_win) = get_or_create_lyrics_window(&app, &state) {
+    if let Some(lyrics_win) = app.get_webview_window("lyrics") {
         let currently_visible = lyrics_win.is_visible().unwrap_or(false);
         let currently_minimized = lyrics_win.is_minimized().unwrap_or(false);
         let should_show = !currently_visible || currently_minimized;
@@ -584,7 +520,6 @@ fn main() {
         windows_history_enabled: false,
     }));
     let auto_hide_fullscreen = Arc::new(AtomicBool::new(true));
-    let own_hwnds = Arc::new(Mutex::new(Vec::<isize>::new()));
 
     let media_mgr_clone = media_mgr.clone();
     let cached_track_clone = cached_track.clone();
@@ -592,7 +527,7 @@ fn main() {
     let cached_lyrics_clone = cached_lyrics.clone();
     let clipboard_clone = clipboard_history.clone();
     let auto_hide_clone = auto_hide_fullscreen.clone();
-    let own_hwnds_setup = own_hwnds.clone();
+    let own_hwnds_setup = Arc::new(Mutex::new(Vec::<isize>::new()));
 
     tauri::Builder::default()
         .manage(AppState {
@@ -605,7 +540,6 @@ fn main() {
             is_lyrics_open,
             clipboard_history,
             auto_hide_fullscreen,
-            own_hwnds,
         })
         .invoke_handler(tauri::generate_handler![
             get_current_track,
@@ -838,6 +772,49 @@ fn main() {
                     }
                     _ => {}
                 });
+            }
+
+            // Pre-position hidden Lyrics window safely during setup (avoids Windows WebView2 main-thread build deadlock)
+            if let Ok(Some(monitor)) = app.primary_monitor() {
+                let screen_size = monitor.size();
+                let screen_w = screen_size.width as i32;
+                let screen_h = screen_size.height as i32;
+
+                if let Some(lyrics_win) = app.get_webview_window("lyrics") {
+                    if let Ok(h) = lyrics_win.hwnd() {
+                        lock_safe(&own_hwnds_setup).push(h.0 as isize);
+                    }
+                    let lyrics_w = lyrics_win
+                        .outer_size()
+                        .map(|s| s.width as i32)
+                        .unwrap_or(440);
+                    let lyrics_h = lyrics_win
+                        .outer_size()
+                        .map(|s| s.height as i32)
+                        .unwrap_or(580);
+                    let lyrics_x = (screen_w - lyrics_w - 40).max(20);
+                    let lyrics_y = ((screen_h - lyrics_h) / 2).max(40);
+                    let _ = lyrics_win.set_position(tauri::Position::Physical(
+                        tauri::PhysicalPosition {
+                            x: lyrics_x,
+                            y: lyrics_y,
+                        },
+                    ));
+                    let _ = lyrics_win.hide();
+
+                    let lyrics_win_clone = lyrics_win.clone();
+                    let app_handle_close = app_handle.clone();
+                    lyrics_win.on_window_event(move |event| {
+                        if let WindowEvent::CloseRequested { api, .. } = event {
+                            api.prevent_close();
+                            let _ = lyrics_win_clone.hide();
+                            if let Some(st) = app_handle_close.try_state::<AppState>() {
+                                *lock_safe(&st.is_lyrics_open) = false;
+                            }
+                            let _ = app_handle_close.emit("lyrics-visibility-changed", false);
+                        }
+                    });
+                }
             }
 
             // 3A. Dedicated SMTC Media & Lyrics Thread (Isolated MTA COM — zero spam when unchanged)
