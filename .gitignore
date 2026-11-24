@@ -1,0 +1,18 @@
+# Node & Frontend
+node_modules/
+dist/
+dist-ssr/
+*.local
+.npm
+
+# Rust & Tauri Build Artifacts
+src-tauri/target/
+**/target/
+Cargo.lock
+
+# OS & Temp
+.DS_Store
+Thumbs.db
+*.log
+.vscode/
+.idea/
