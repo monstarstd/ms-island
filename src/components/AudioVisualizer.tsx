@@ -60,13 +60,13 @@ export const AudioVisualizer: React.FC<AudioVisualizerProps> = React.memo(
     const maxPx = compact ? 13 : 16;
 
     const colorClass = hasLiveSignal
-      ? "bg-[#f97316]"
+      ? "bg-accent"
       : isLight
         ? "bg-zinc-900"
         : "bg-zinc-100";
 
     const strokeColor = hasLiveSignal
-      ? "#f97316"
+      ? "var(--accent)"
       : isLight
         ? "#18181b"
         : "#f4f4f5";

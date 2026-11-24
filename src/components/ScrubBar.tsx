@@ -72,7 +72,7 @@ export const ScrubBar: React.FC<ScrubBarProps> = ({
   };
 
   const fillClass = accent
-    ? "bg-[#f97316]"
+    ? "bg-accent"
     : isLight
       ? "bg-zinc-900"
       : "bg-zinc-100";
@@ -95,7 +95,7 @@ export const ScrubBar: React.FC<ScrubBarProps> = ({
         if (!isDragging) setHoverRatio(null);
       }}
       onKeyDown={handleKeyDown}
-      className={`group relative w-full h-3.5 flex items-center select-none focus:outline-none focus-visible:ring-1 focus-visible:ring-[#f97316] rounded-full ${
+      className={`group relative w-full h-3.5 flex items-center select-none focus:outline-none focus-visible:ring-1 focus-visible:ring-accent rounded-full ${
         disabled ? "opacity-40 cursor-default" : "cursor-pointer"
       }`}
     >

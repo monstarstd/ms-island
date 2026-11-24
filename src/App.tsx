@@ -6,6 +6,7 @@ import { DynamicIsland } from "./components/DynamicIsland";
 import { FullLyricsWindow } from "./components/FullLyricsWindow";
 import { MediaTrack } from "./types/media";
 import { ThemeMode } from "./types/theme";
+import { applyAccentFromThumbnail } from "./utils/accentColor";
 
 const EMPTY_TRACK: MediaTrack = {
   title: "",
@@ -35,6 +36,11 @@ export const App: React.FC = () => {
 
   const lastThumbIdRef = useRef<string | null>(null);
   const cachedThumbDataRef = useRef<string | undefined>(undefined);
+
+  // Sync dynamic MS Island accent color to current track's album cover (with WCAG-safe clamping)
+  useEffect(() => {
+    applyAccentFromThumbnail(media.thumbnail, theme);
+  }, [media.thumbnail, theme]);
 
   // Detect which window this is in Tauri
   useEffect(() => {

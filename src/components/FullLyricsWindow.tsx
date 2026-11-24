@@ -21,16 +21,15 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
   onClose,
   onStartDrag
 }) => {
-  const [isWindowHovered, setIsWindowHovered] = useState(false);
   const [copiedLyrics, setCopiedLyrics] = useState(false);
   const [copiedTrack, setCopiedTrack] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [isSearching, setIsSearching] = useState(false);
   const [customLyrics, setCustomLyrics] = useState<string | null>(null);
   const [isPinned, setIsPinned] = useState(true);
-  const [backdropMode, setBackdropMode] = useState<"solid" | "smoked" | "acrylic">(() => {
+  const [backdropMode, setBackdropMode] = useState<"solid" | "acrylic">(() => {
     const saved = localStorage.getItem("ms-island-lyrics-backdrop");
-    return saved === "acrylic" || saved === "smoked" || saved === "solid" ? saved : "solid";
+    return saved === "acrylic" ? "acrylic" : "solid";
   });
   const [fontSize, setFontSize] = useState<number>(() => {
     const saved = Number(localStorage.getItem("ms-island-lyrics-font"));
@@ -39,7 +38,6 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
 
   const isLight = theme === "light";
   const isAcrylic = backdropMode === "acrylic";
-  const isSmoked = backdropMode === "smoked";
 
   // Sync native Windows DWM Acrylic / Matte backdrop whenever mode or theme changes
   useEffect(() => {
@@ -50,7 +48,7 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
     });
   }, [backdropMode, isLight]);
 
-  const handleSetBackdrop = (next: "solid" | "smoked" | "acrylic") => {
+  const handleSetBackdrop = (next: "solid" | "acrylic") => {
     setBackdropMode(next);
     localStorage.setItem("ms-island-lyrics-backdrop", next);
   };
@@ -151,23 +149,17 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
 
   return (
     <div
-      onMouseEnter={() => setIsWindowHovered(true)}
-      onMouseLeave={() => setIsWindowHovered(false)}
       className={`w-full h-full flex flex-col ${shellRadiusCls} overflow-hidden select-none border transition-[border-color,box-shadow] duration-150 ease-out ${
         isAcrylic
           ? isLight
             ? "bg-transparent border-black/15 text-zinc-900"
             : "bg-transparent border-white/15 text-zinc-100"
-          : isSmoked && !isWindowHovered
-            ? isLight
-              ? "border-zinc-300/65 shadow-lg text-zinc-900"
-              : "border-zinc-800/70 shadow-lg text-zinc-100"
-            : isLight
-              ? "border-zinc-300 shadow-2xl text-zinc-900"
-              : "border-zinc-800 shadow-2xl text-zinc-100"
+          : isLight
+            ? "border-zinc-300 shadow-2xl text-zinc-900"
+            : "border-zinc-800 shadow-2xl text-zinc-100"
       }`}
     >
-      {/* TOP ZONE: Solid in Solid/Smoked modes, unified transparent Acrylic in Acrylic mode */}
+      {/* TOP ZONE: Solid in Solid mode, unified transparent Acrylic in Acrylic mode */}
       <div
         className={`flex-shrink-0 border-b transition-[background-color,border-color] duration-150 ${topRadiusCls} ${dividerCls} ${
           isAcrylic
@@ -210,7 +202,7 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
           <div className="flex items-center gap-1 flex-shrink-0">
             <button
               onClick={handleCopyTrackInfo}
-              className={`flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium transition-all border focus:outline-none focus-visible:ring-1 focus-visible:ring-[#f97316] ${btnCls}`}
+              className={`flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium transition-all border focus:outline-none focus-visible:ring-1 focus-visible:ring-accent ${btnCls}`}
               title="Copy Title & Artist"
             >
               {copiedTrack ? (
@@ -228,7 +220,7 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
 
             <button
               onClick={handleCopyLyrics}
-              className={`flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium transition-all border focus:outline-none focus-visible:ring-1 focus-visible:ring-[#f97316] ${btnCls}`}
+              className={`flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium transition-all border focus:outline-none focus-visible:ring-1 focus-visible:ring-accent ${btnCls}`}
               title="Copy Full Lyrics"
             >
               {copiedLyrics ? (
@@ -246,9 +238,9 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
 
             <button
               onClick={handleTogglePin}
-              className={`p-1.5 rounded-md transition-all focus:outline-none focus-visible:ring-1 focus-visible:ring-[#f97316] active:scale-[0.95] ${
+              className={`p-1.5 rounded-md transition-all focus:outline-none focus-visible:ring-1 focus-visible:ring-accent active:scale-[0.95] ${
                 isPinned
-                  ? "text-[#f97316] hover:bg-zinc-800/40"
+                  ? "text-accent hover:bg-zinc-800/40"
                   : isLight
                     ? "text-zinc-500 hover:bg-zinc-200"
                     : "text-zinc-400 hover:bg-zinc-800"
@@ -260,7 +252,7 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
 
             <button
               onClick={onToggleTheme}
-              className={`p-1.5 rounded-md transition-all focus:outline-none focus-visible:ring-1 focus-visible:ring-[#f97316] active:scale-[0.95] ${
+              className={`p-1.5 rounded-md transition-all focus:outline-none focus-visible:ring-1 focus-visible:ring-accent active:scale-[0.95] ${
                 isLight ? "text-zinc-700 hover:bg-zinc-200" : "text-zinc-400 hover:text-white hover:bg-zinc-800"
               }`}
               title={isLight ? "Switch to Dark Mode" : "Switch to Light Mode"}
@@ -270,7 +262,7 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
 
             <button
               onClick={onClose}
-              className={`p-1.5 rounded-md transition-all focus:outline-none focus-visible:ring-1 focus-visible:ring-[#f97316] active:scale-[0.95] ${
+              className={`p-1.5 rounded-md transition-all focus:outline-none focus-visible:ring-1 focus-visible:ring-accent active:scale-[0.95] ${
                 isLight ? "text-zinc-600 hover:text-red-600 hover:bg-zinc-200" : "text-zinc-400 hover:text-red-400 hover:bg-zinc-800"
               }`}
               title="Close Lyrics Window (Esc)"
@@ -297,7 +289,7 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search song title or artist..."
-              className={`w-full text-xs rounded-lg px-2.5 py-1.5 pl-8 focus:outline-none focus-visible:ring-1 focus-visible:ring-[#f97316] transition-colors border ${
+              className={`w-full text-xs rounded-lg px-2.5 py-1.5 pl-8 focus:outline-none focus-visible:ring-1 focus-visible:ring-accent transition-colors border ${
                 isAcrylic
                   ? isLight
                     ? "bg-black/[0.06] border-black/15 text-zinc-900 placeholder-zinc-600"
@@ -323,18 +315,14 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
         </form>
       </div>
 
-      {/* LYRICS BODY BOX: Solid (always 100%) | Smoked (78% -> 100% on hover) | Acrylic (unified glass) */}
+      {/* LYRICS BODY BOX: Solid (always 100%) | Acrylic (unified glass) */}
       <div
         className={`flex-1 px-6 py-5 overflow-y-auto select-text transition-[background-color] duration-150 ease-out ${
           isAcrylic
             ? "bg-transparent"
-            : isSmoked && !isWindowHovered
-              ? isLight
-                ? "bg-[#f8f8f7]/84"
-                : "bg-[#0c0c0e]/78"
-              : isLight
-                ? "bg-[#f8f8f7]"
-                : "bg-[#0c0c0e]"
+            : isLight
+              ? "bg-[#f8f8f7]"
+              : "bg-[#0c0c0e]"
         }`}
       >
         {displayedLyrics ? (
@@ -358,14 +346,14 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
         )}
       </div>
 
-      {/* Footer: 3-Mode Selector (Solid / Smoked / Acrylic) + Font Size Controls */}
+      {/* Footer: 2-Mode Selector (Solid / Acrylic) + Font Size Controls */}
       <div
         onMouseDown={(e) => {
           if (e.button !== 0) return;
           if ((e.target as HTMLElement).closest("button")) return;
           onStartDrag();
         }}
-        className={`px-3.5 py-2 border-t flex items-center justify-between text-[11px] cursor-move transition-[background-color,opacity] duration-150 ${dividerCls} ${
+        className={`px-3.5 py-2 border-t flex items-center justify-between text-[11px] cursor-move transition-[background-color] duration-150 ${dividerCls} ${
           isAcrylic
             ? isLight
               ? "bg-transparent text-zinc-700"
@@ -373,10 +361,10 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
             : isLight
               ? "bg-[#efefec] text-zinc-600"
               : "bg-[#121215] text-zinc-400"
-        } ${isSmoked && !isWindowHovered ? "opacity-80" : "opacity-100"}`}
+        }`}
       >
         <div
-          className={`grid grid-cols-3 p-0.5 rounded-lg border text-[10px] font-medium ${
+          className={`grid grid-cols-2 p-0.5 rounded-lg border text-[10px] font-medium ${
             isAcrylic
               ? isLight
                 ? "bg-black/[0.06] border-black/12"
@@ -387,11 +375,11 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
           }`}
           title="Lyrics background style"
         >
-          {(["solid", "smoked", "acrylic"] as const).map((mode) => (
+          {(["solid", "acrylic"] as const).map((mode) => (
             <button
               key={mode}
               onClick={() => handleSetBackdrop(mode)}
-              className={`px-2 py-0.5 rounded-md capitalize transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-[#f97316] ${
+              className={`px-2.5 py-0.5 rounded-md capitalize transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-accent ${
                 backdropMode === mode
                   ? isAcrylic
                     ? isLight

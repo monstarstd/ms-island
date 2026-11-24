@@ -86,7 +86,7 @@ export const IdleBar: React.FC<IdleBarProps> = React.memo(
           }`}
         >
           {isDragOver ? (
-            <div className="flex items-center gap-1.5 text-[11px] font-medium text-[#f97316]">
+            <div className="flex items-center gap-1.5 text-[11px] font-medium text-accent">
               <Inbox className="w-3.5 h-3.5 flex-shrink-0" />
               <span className="truncate">Drop files to save on Shelf</span>
             </div>
@@ -96,7 +96,7 @@ export const IdleBar: React.FC<IdleBarProps> = React.memo(
               <div className={`h-1.5 rounded-full overflow-hidden ${isLight ? "bg-zinc-300" : "bg-zinc-800"}`}>
                 <div
                   className={`h-full rounded-full transition-all duration-75 ${
-                    volume.muted ? "bg-zinc-500" : "bg-[#f97316]"
+                    volume.muted ? "bg-zinc-500" : "bg-accent"
                   }`}
                   style={{ width: `${volume.muted ? 0 : volume.level}%` }}
                 />
@@ -107,13 +107,13 @@ export const IdleBar: React.FC<IdleBarProps> = React.memo(
             </div>
           ) : toast ? (
             <div className="flex items-center gap-1.5 text-[11px] font-medium truncate">
-              <span className="w-1.5 h-1.5 rounded-full bg-[#f97316] flex-shrink-0" />
+              <span className="w-1.5 h-1.5 rounded-full bg-accent flex-shrink-0" />
               <span className="truncate">{toast.message}</span>
             </div>
           ) : activeDownload ? (
             <div className="flex items-center gap-1.5 min-w-0 text-[11px]">
-              <ArrowDownToLine className="w-3.5 h-3.5 text-[#f97316] flex-shrink-0" />
-              <span className="font-mono tabular-nums font-semibold text-[#f97316] flex-shrink-0">
+              <ArrowDownToLine className="w-3.5 h-3.5 text-accent flex-shrink-0" />
+              <span className="font-mono tabular-nums font-semibold text-accent flex-shrink-0">
                 {formatSpeed(activeDownload.speedBytesPerSec)}
               </span>
               <span className={`font-mono tabular-nums text-[10px] flex-shrink-0 ${mutedText}`}>
@@ -125,12 +125,12 @@ export const IdleBar: React.FC<IdleBarProps> = React.memo(
             <div className="flex items-center gap-1.5 min-w-0 truncate">
               <Hourglass
                 className={`w-3.5 h-3.5 flex-shrink-0 ${
-                  isTimerFinished ? "text-[#f97316]" : mutedText
+                  isTimerFinished ? "text-accent" : mutedText
                 }`}
               />
               <span
                 className={`text-[11px] font-mono tabular-nums font-medium truncate ${
-                  isTimerFinished ? "text-[#f97316] font-semibold" : ""
+                  isTimerFinished ? "text-accent font-semibold" : ""
                 }`}
               >
                 {isTimerFinished ? "Timer Finished" : formatTime(timerRemaining)}

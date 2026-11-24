@@ -40,7 +40,7 @@ export function getIslandThemeTokens(isLight: boolean): IslandThemeTokens {
     primaryBtnCls: isLight
       ? "bg-zinc-900 text-white hover:bg-zinc-800 active:scale-[0.97]"
       : "bg-zinc-100 text-zinc-950 hover:bg-white active:scale-[0.97]",
-    focusRing: "focus:outline-none focus-visible:ring-1 focus-visible:ring-[#f97316]",
+    focusRing: "focus:outline-none focus-visible:ring-1 focus-visible:ring-accent",
   };
 }
 

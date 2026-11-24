@@ -61,7 +61,7 @@ export const SystemTab: React.FC<SystemTabProps> = React.memo(
                     key={idx}
                     className={`rounded-sm transition-all duration-300 ${
                       idx === cpuHistory.length - 1
-                        ? "bg-[#f97316]"
+                        ? "bg-accent"
                         : isLight
                           ? "bg-zinc-700"
                           : "bg-zinc-400"
@@ -105,7 +105,7 @@ export const SystemTab: React.FC<SystemTabProps> = React.memo(
               {battery.hasBattery && (
                 <div className={`flex items-center gap-1 text-[10px] font-mono tabular-nums ${mutedText}`}>
                   {battery.isCharging ? (
-                    <BatteryCharging className="w-3 h-3 text-[#f97316]" />
+                    <BatteryCharging className="w-3 h-3 text-accent" />
                   ) : (
                     <Battery className="w-3 h-3" />
                   )}
@@ -137,7 +137,7 @@ export const SystemTab: React.FC<SystemTabProps> = React.memo(
                   >
                     <span className="truncate">{dev.name}</span>
                     {dev.isDefault && (
-                      <span className="w-1.5 h-1.5 rounded-full bg-[#f97316] flex-shrink-0" />
+                      <span className="w-1.5 h-1.5 rounded-full bg-accent flex-shrink-0" />
                     )}
                   </button>
                 ))
@@ -188,7 +188,7 @@ export const SystemTab: React.FC<SystemTabProps> = React.memo(
               aria-label="Toggle auto-hide on fullscreen"
               className={`w-9 h-5 rounded-full p-0.5 transition-colors flex items-center flex-shrink-0 ${focusRing} ${
                 autoHideFullscreen
-                  ? "bg-[#f97316] justify-end"
+                  ? "bg-accent justify-end"
                   : isLight
                     ? "bg-zinc-300 justify-start"
                     : "bg-zinc-700 justify-start"
@@ -214,7 +214,7 @@ export const SystemTab: React.FC<SystemTabProps> = React.memo(
               aria-label="Toggle start with Windows"
               className={`w-9 h-5 rounded-full p-0.5 transition-colors flex items-center flex-shrink-0 ${focusRing} ${
                 autostartEnabled
-                  ? "bg-[#f97316] justify-end"
+                  ? "bg-accent justify-end"
                   : isLight
                     ? "bg-zinc-300 justify-start"
                     : "bg-zinc-700 justify-start"

@@ -94,7 +94,7 @@ export const NotesTab: React.FC<NotesTabProps> = React.memo(
               value={notesText}
               onChange={(e) => onNotesChange(e.target.value)}
               placeholder="Quick notes, reminders, or snippets... (Auto-saved locally)"
-              className={`w-full h-full resize-none rounded-xl border p-2.5 text-xs leading-relaxed focus:outline-none focus-visible:ring-1 focus-visible:ring-[#f97316] select-text ${
+              className={`w-full h-full resize-none rounded-xl border p-2.5 text-xs leading-relaxed focus:outline-none focus-visible:ring-1 focus-visible:ring-accent select-text ${
                 isLight
                   ? "bg-white border-zinc-300 text-zinc-900 placeholder-zinc-500"
                   : "bg-[#141418] border-zinc-800 text-zinc-100 placeholder-zinc-500"
@@ -190,7 +190,7 @@ export const NotesTab: React.FC<NotesTabProps> = React.memo(
             <div className={`flex items-center gap-1.5 text-[10px] ${mutedText}`}>
               {winClipboardSynced ? (
                 <>
-                  <span className="w-1.5 h-1.5 rounded-full bg-[#f97316] flex-shrink-0" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-accent flex-shrink-0" />
                   <span>Synced with Windows Clipboard (Win + V)</span>
                 </>
               ) : (

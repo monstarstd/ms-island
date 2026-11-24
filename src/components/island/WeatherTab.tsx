@@ -73,7 +73,7 @@ export const WeatherTab: React.FC<WeatherTabProps> = React.memo(
                 value={cityInput}
                 onChange={(e) => setCityInput(e.target.value)}
                 placeholder="Set city (e.g. Jakarta, Tokyo)..."
-                className={`w-full h-7 text-[11px] rounded-lg pl-7 pr-2 border focus:outline-none focus-visible:ring-1 focus-visible:ring-[#f97316] ${
+                className={`w-full h-7 text-[11px] rounded-lg pl-7 pr-2 border focus:outline-none focus-visible:ring-1 focus-visible:ring-accent ${
                   isLight
                     ? "bg-white border-zinc-300 text-zinc-900 placeholder-zinc-500"
                     : "bg-[#141418] border-zinc-800 text-zinc-100 placeholder-zinc-500"

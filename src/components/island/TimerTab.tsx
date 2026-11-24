@@ -35,7 +35,7 @@ export const TimerTab: React.FC<TimerTabProps> = React.memo(
               <span className={`text-[10px] font-medium ${mutedText}`}>Countdown</span>
               <span
                 className={`text-[10px] font-semibold ${
-                  isTimerFinished || isTimerRunning ? "text-[#f97316]" : mutedText
+                  isTimerFinished || isTimerRunning ? "text-accent" : mutedText
                 }`}
               >
                 {isTimerFinished ? "Complete" : isTimerRunning ? "Running" : "Ready"}
@@ -43,7 +43,7 @@ export const TimerTab: React.FC<TimerTabProps> = React.memo(
             </div>
             <div
               className={`text-4xl font-mono font-bold tabular-nums mt-2 leading-none ${
-                isTimerFinished ? "text-[#f97316]" : ""
+                isTimerFinished ? "text-accent" : ""
               }`}
             >
               {formatTime(timerRemaining)}
@@ -75,12 +75,12 @@ export const TimerTab: React.FC<TimerTabProps> = React.memo(
         <div className="col-span-7 flex flex-col justify-between gap-2.5 py-0.5">
           {isTimerFinished ? (
             <div
-              className={`flex-1 p-3 flex flex-col justify-between border border-[#f97316]/60 rounded-xl ${
-                isLight ? "bg-orange-50" : "bg-[#1a1410]"
+              className={`flex-1 p-3 flex flex-col justify-between border border-accent/60 rounded-xl ${
+                isLight ? "bg-accent/10" : "bg-accent/15"
               }`}
             >
               <div>
-                <div className="text-xs font-semibold text-[#f97316]">Timer Completed</div>
+                <div className="text-xs font-semibold text-accent">Timer Completed</div>
                 <p className={`text-[11px] mt-0.5 ${mutedText}`}>Your countdown reached 0:00.</p>
               </div>
               <div className="grid grid-cols-2 gap-2">
@@ -128,7 +128,7 @@ export const TimerTab: React.FC<TimerTabProps> = React.memo(
 
               <div className={`w-full h-1.5 rounded-full overflow-hidden ${isLight ? "bg-zinc-300" : "bg-zinc-800"}`}>
                 <div
-                  className="h-full bg-[#f97316] transition-all duration-300"
+                  className="h-full bg-accent transition-all duration-300"
                   style={{
                     width: `${
                       timerDuration > 0

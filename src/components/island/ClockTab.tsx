@@ -80,8 +80,8 @@ export const ClockTab: React.FC<ClockTabProps> = React.memo(({ tokens, currentTi
             className={`text-center rounded px-1.5 py-0.5 transition-colors ${focusRing} ${
               calendarMonthOffset !== 0
                 ? isLight
-                  ? "hover:bg-zinc-100 text-[#f97316]"
-                  : "hover:bg-zinc-800 text-[#f97316]"
+                  ? "hover:bg-zinc-100 text-accent"
+                  : "hover:bg-zinc-800 text-accent"
                 : ""
             }`}
             title={calendarMonthOffset !== 0 ? "Return to current month" : currentMonthName}
@@ -115,7 +115,7 @@ export const ClockTab: React.FC<ClockTabProps> = React.memo(({ tokens, currentTi
                 key={`day-${dayNum}`}
                 className={`h-[17px] flex items-center justify-center rounded-full ${
                   isToday
-                    ? "bg-[#f97316] text-white font-bold"
+                    ? "bg-accent text-white font-bold"
                     : isLight
                       ? "text-zinc-800 hover:bg-zinc-100"
                       : "text-zinc-200 hover:bg-zinc-800"

@@ -50,7 +50,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = React.memo(
               isLight ? "hover:bg-zinc-200/80" : "hover:bg-zinc-800"
             }`}
           >
-            <RefreshCw className="w-3.5 h-3.5 text-[#f97316]" />
+            <RefreshCw className="w-3.5 h-3.5 text-accent" />
             <span>Refresh &amp; Center</span>
           </button>
 

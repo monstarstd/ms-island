@@ -877,7 +877,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
         style={{ width: `${isHovered ? 516 : idleWidthPx}px` }}
         className={`island-shell-spring overflow-hidden border ${tokens.shellSurface} ${shellShapeCls} ${
           isMoving ? "scale-[1.016] shadow-2xl shadow-black/90" : "scale-100"
-        } ${isDragOver ? "border-[#f97316] ring-1 ring-[#f97316]" : ""}`}
+        } ${isDragOver ? "border-accent ring-1 ring-accent" : ""}`}
       >
         {!isHovered ? (
           <IdleBar
@@ -937,7 +937,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
                       <Icon className="w-3.5 h-3.5 flex-shrink-0" />
                       {isActive && <span className="whitespace-nowrap">{label}</span>}
                       {!isActive && hasBadge && (
-                        <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-[#f97316]" />
+                        <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-accent" />
                       )}
                     </button>
                   );
