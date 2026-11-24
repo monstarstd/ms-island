@@ -24,10 +24,14 @@ use windows::Win32::System::Registry::{
     HKEY_CURRENT_USER, KEY_READ, KEY_WRITE, REG_SZ,
 };
 use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
-use windows::Win32::System::Threading::{CreateMutexW, GetSystemTimes};
+use windows::Win32::System::Threading::{
+    CreateEventW, CreateMutexW, GetSystemTimes, OpenEventW, SetEvent, WaitForSingleObject,
+    EVENT_MODIFY_STATE, INFINITE,
+};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CAPITAL};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetClassNameW, GetForegroundWindow, GetWindowRect, IsWindowVisible,
+    GetClassNameW, GetForegroundWindow, GetWindowLongW, GetWindowRect, IsWindowVisible, GWL_STYLE,
+    WS_CAPTION, WS_THICKFRAME,
 };
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -445,17 +449,31 @@ pub fn is_other_app_fullscreen(own_hwnds: &[isize]) -> bool {
             return false;
         }
 
-        // Exclude Windows desktop shell windows
+        // Exclude Windows desktop shell / system overlay windows
         let mut class_buf = [0u16; 128];
         let len = GetClassNameW(fg, &mut class_buf);
         if len > 0 {
             let class_name = String::from_utf16_lossy(&class_buf[..len as usize]);
             if matches!(
                 class_name.as_str(),
-                "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd" | "Windows.UI.Core.CoreWindow"
+                "Progman"
+                    | "WorkerW"
+                    | "Shell_TrayWnd"
+                    | "Shell_SecondaryTrayWnd"
+                    | "Windows.UI.Core.CoreWindow"
+                    | "XamlExplorerHostIslandWindow"
+                    | "ForegroundStaging"
+                    | "MultitaskingViewFrame"
             ) {
                 return false;
             }
+        }
+
+        // Normal maximized desktop windows (VS Code, Explorer, Browser) keep standard framed caption;
+        // true fullscreen videos (F11 / HTML5) and games strip WS_CAPTION + WS_THICKFRAME.
+        let style = GetWindowLongW(fg, GWL_STYLE) as u32;
+        if (style & WS_CAPTION.0) == WS_CAPTION.0 && (style & WS_THICKFRAME.0) != 0 {
+            return false;
         }
 
         let mut win_rect = RECT::default();
@@ -733,6 +751,7 @@ pub fn reveal_file_in_explorer(path: &str) -> bool {
 const RUN_SUBKEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 const APP_REG_NAME: &str = "MSIsland";
 const STARTUP_TASK_NAME: &str = "MSIslandAutoStart";
+const WAKE_EVENT_NAME: &str = "Local\\MSIsland_ShowWakeEvent_v1";
 
 /// Ensures only one instance of MS Island runs at a time.
 /// Returns Some(handle) if this is the primary instance, or None if another instance is already running.
@@ -747,6 +766,39 @@ pub fn acquire_single_instance_mutex() -> Option<isize> {
         }
     }
     Some(0)
+}
+
+/// Signals the already-running MS Island instance to immediately un-hide and re-center on screen.
+pub fn signal_existing_instance_to_show() {
+    let name = HSTRING::from(WAKE_EVENT_NAME);
+    unsafe {
+        if let Ok(ev) = OpenEventW(EVENT_MODIFY_STATE, false, PCWSTR(name.as_ptr())) {
+            let _ = SetEvent(ev);
+            let _ = windows::Win32::Foundation::CloseHandle(ev);
+        }
+    }
+}
+
+/// Zero-CPU kernel wait thread that wakes & re-centers MS Island whenever a second instance is launched.
+pub fn spawn_wake_event_listener<F>(on_wake: F)
+where
+    F: Fn() + Send + 'static,
+{
+    std::thread::spawn(move || {
+        let name = HSTRING::from(WAKE_EVENT_NAME);
+        unsafe {
+            if let Ok(ev) = CreateEventW(None, false, false, PCWSTR(name.as_ptr())) {
+                loop {
+                    let wait = WaitForSingleObject(ev, INFINITE);
+                    if wait.0 == 0 {
+                        on_wake();
+                    } else {
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                    }
+                }
+            }
+        }
+    });
 }
 
 pub fn is_autostart_enabled() -> bool {

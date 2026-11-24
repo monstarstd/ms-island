@@ -856,10 +856,10 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
 
   const shellShapeCls = (() => {
     if (isHovered) {
-      if (dockEdge === "top") return "h-[256px] rounded-t-none rounded-b-[22px] border-t-0 p-3.5";
-      if (dockEdge === "left") return "h-[256px] rounded-l-none rounded-r-[22px] border-l-0 p-3.5";
-      if (dockEdge === "right") return "h-[256px] rounded-r-none rounded-l-[22px] border-r-0 p-3.5";
-      return "h-[256px] rounded-[22px] p-3.5";
+      if (dockEdge === "top") return "h-[262px] rounded-t-none rounded-b-[22px] border-t-0 p-3.5";
+      if (dockEdge === "left") return "h-[262px] rounded-l-none rounded-r-[22px] border-l-0 p-3.5";
+      if (dockEdge === "right") return "h-[262px] rounded-r-none rounded-l-[22px] border-r-0 p-3.5";
+      return "h-[262px] rounded-[22px] p-3.5";
     }
     if (dockEdge === "top") return "h-[36px] rounded-t-none rounded-b-[16px] border-t-0 px-3.5 py-1.5 cursor-pointer";
     if (dockEdge === "left") return "h-[36px] rounded-l-none rounded-r-[18px] border-l-0 px-3.5 py-1.5 cursor-pointer";
@@ -902,7 +902,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
             onStartDrag={onStartDrag}
           />
         ) : (
-          <div className="w-[486px] h-[226px] mx-auto grid grid-rows-[auto_1fr] gap-2.5 select-none island-panel-fade">
+          <div className="w-[486px] h-[232px] mx-auto grid grid-rows-[auto_1fr] gap-2 select-none island-panel-fade">
             {/* Navigation Bar */}
             <div
               className={`grid grid-cols-[1fr_auto] items-center gap-2 pb-2 border-b ${

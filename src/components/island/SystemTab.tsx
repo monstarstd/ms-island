@@ -41,10 +41,10 @@ export const SystemTab: React.FC<SystemTabProps> = React.memo(
     const { isLight, surfaceSubtle, mutedText, focusRing } = tokens;
 
     return (
-      <div className="w-full h-full grid grid-cols-12 gap-3 items-stretch">
+      <div className="w-full h-full grid grid-cols-12 gap-2.5 items-stretch min-h-0">
         {/* Left (6 cols): Hardware Monitor + Audio Output Switcher */}
-        <div className="col-span-6 grid grid-rows-[auto_1fr] gap-2 min-h-0">
-          <div className={`p-2.5 grid grid-cols-2 gap-3 ${surfaceSubtle}`}>
+        <div className="col-span-6 grid grid-rows-[auto_1fr] gap-1.5 min-h-0 h-full">
+          <div className={`p-2 grid grid-cols-2 gap-2.5 ${surfaceSubtle}`}>
             <div className="flex flex-col justify-between gap-1">
               <div className="flex items-center justify-between">
                 <span className={`text-[10px] font-medium ${mutedText}`}>CPU</span>
@@ -53,7 +53,7 @@ export const SystemTab: React.FC<SystemTabProps> = React.memo(
                 </span>
               </div>
               <div
-                className="grid gap-[2px] items-end h-4"
+                className="grid gap-[2px] items-end h-3.5"
                 style={{ gridTemplateColumns: "repeat(14, minmax(0, 1fr))" }}
               >
                 {cpuHistory.map((val, idx) => (
@@ -90,14 +90,14 @@ export const SystemTab: React.FC<SystemTabProps> = React.memo(
                   style={{ width: `${Math.min(100, sysStats.ramPercent)}%` }}
                 />
               </div>
-              <div className={`text-[9px] font-mono tabular-nums ${mutedText}`}>
+              <div className={`text-[9px] font-mono tabular-nums leading-none ${mutedText}`}>
                 {sysStats.ramUsedGb.toFixed(1)}/{sysStats.ramTotalGb.toFixed(0)} GB
               </div>
             </div>
           </div>
 
           <div className={`p-2 flex flex-col overflow-hidden min-h-0 ${surfaceSubtle}`}>
-            <div className="flex items-center justify-between pb-1 mb-1 border-b border-zinc-800/30">
+            <div className="flex items-center justify-between pb-1 mb-1 border-b border-zinc-800/30 flex-shrink-0">
               <div className={`flex items-center gap-1.5 text-[10px] font-medium ${mutedText}`}>
                 <Speaker className="w-3 h-3" />
                 <span>Audio Output</span>
@@ -114,7 +114,7 @@ export const SystemTab: React.FC<SystemTabProps> = React.memo(
               )}
             </div>
 
-            <div className="scrollable-area flex-1 overflow-y-auto space-y-1">
+            <div className="scrollable-area flex-1 min-h-0 overflow-y-auto space-y-1">
               {audioDevices.length === 0 ? (
                 <div className={`text-[10px] py-2 text-center ${mutedText}`}>
                   No active output devices
@@ -147,9 +147,9 @@ export const SystemTab: React.FC<SystemTabProps> = React.memo(
         </div>
 
         {/* Right (6 cols): Volume ScrubBar + Fullscreen Hide + Auto-Start */}
-        <div className="col-span-6 grid grid-rows-3 gap-2">
-          <div className={`px-3 py-2 flex flex-col justify-center gap-1 ${surfaceSubtle}`}>
-            <div className="flex items-center justify-between">
+        <div className="col-span-6 grid grid-rows-3 gap-1.5 min-h-0 h-full">
+          <div className={`px-2.5 py-1.5 flex flex-col justify-center gap-0.5 min-h-0 ${surfaceSubtle}`}>
+            <div className="flex items-center justify-between leading-tight">
               <span className={`text-[10px] font-medium ${mutedText}`}>Master Volume</span>
               <span className="text-[11px] font-mono font-bold tabular-nums">
                 {volume.muted ? "Muted" : `${volume.level}%`}
@@ -158,7 +158,7 @@ export const SystemTab: React.FC<SystemTabProps> = React.memo(
             <div className="grid grid-cols-[auto_1fr] items-center gap-2">
               <button
                 onClick={onToggleMute}
-                className={`p-1 rounded ${focusRing} ${
+                className={`p-0.5 rounded ${focusRing} ${
                   isLight ? "text-zinc-700 hover:bg-zinc-100" : "text-zinc-300 hover:bg-zinc-800"
                 }`}
               >
@@ -175,13 +175,13 @@ export const SystemTab: React.FC<SystemTabProps> = React.memo(
             </div>
           </div>
 
-          <div className={`px-3 py-2 flex items-center justify-between gap-2 ${surfaceSubtle}`}>
-            <div className="min-w-0">
+          <div className={`px-2.5 py-1.5 flex items-center justify-between gap-2 min-h-0 ${surfaceSubtle}`}>
+            <div className="min-w-0 leading-tight">
               <div className="flex items-center gap-1.5 text-[11px] font-medium">
                 <Monitor className={`w-3.5 h-3.5 flex-shrink-0 ${mutedText}`} />
                 <span className="truncate">Auto-Hide Fullscreen</span>
               </div>
-              <div className={`text-[10px] truncate ${mutedText}`}>Hide during videos &amp; games</div>
+              <div className={`text-[10px] truncate mt-0.5 ${mutedText}`}>Hide during videos &amp; games</div>
             </div>
             <button
               onClick={onToggleAutoHideFullscreen}
@@ -198,13 +198,13 @@ export const SystemTab: React.FC<SystemTabProps> = React.memo(
             </button>
           </div>
 
-          <div className={`px-3 py-2 flex items-center justify-between gap-2 ${surfaceSubtle}`}>
-            <div className="min-w-0">
+          <div className={`px-2.5 py-1.5 flex items-center justify-between gap-2 min-h-0 ${surfaceSubtle}`}>
+            <div className="min-w-0 leading-tight">
               <div className="flex items-center gap-1.5 text-[11px] font-medium">
                 <Power className={`w-3.5 h-3.5 flex-shrink-0 ${mutedText}`} />
                 <span className="truncate">Start with Windows</span>
               </div>
-              <div className={`text-[9px] truncate ${mutedText}`} title="Global Shortcuts: Alt+I Island · Alt+L Lyrics · Alt+Shift+Space Play">
+              <div className={`text-[9px] truncate mt-0.5 ${mutedText}`} title="Global Shortcuts: Alt+I Island · Alt+L Lyrics · Alt+Shift+Space Play">
                 Hotkeys: Alt+I · Alt+L · Alt+Shift+Space
               </div>
             </div>

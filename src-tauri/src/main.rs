@@ -499,10 +499,13 @@ fn start_window_drag(window: tauri::WebviewWindow) {
 }
 
 fn main() {
-    // 0. Single-instance guard: exit immediately if another MS Island is already running
+    // 0. Single-instance guard: if already running, wake & re-center the existing instance before exiting
     let _instance_guard = match system_tools::acquire_single_instance_mutex() {
         Some(h) => h,
-        None => return,
+        None => {
+            system_tools::signal_existing_instance_to_show();
+            return;
+        }
     };
 
     // Keep auto-start path & ONLOGON task synced to this executable in background
@@ -1090,6 +1093,28 @@ fn main() {
 
             // 3D. Live Browser Downloads Watcher (Brave / Chrome / Edge / Firefox -> Auto-Shelf)
             downloads::spawn_downloads_watcher(app_handle.clone());
+
+            // 3E. Re-launch Wake Listener (if user runs ms-island again, immediately un-hide & re-center!)
+            let wake_handle = app_handle.clone();
+            system_tools::spawn_wake_event_listener(move || {
+                let h_ui = wake_handle.clone();
+                let _ = wake_handle.run_on_main_thread(move || {
+                    center_island_on_primary_monitor(&h_ui);
+                    let _ = h_ui.emit("island-dock-changed", "top");
+                    if let Some(w) = h_ui.get_webview_window("island") {
+                        let _ = w.unminimize();
+                        let _ = w.show();
+                        let _ = w.set_focus();
+                    }
+                    let _ = h_ui.emit(
+                        "island-toast",
+                        IslandToast {
+                            kind: "refresh".to_string(),
+                            message: "MS Island Ready".to_string(),
+                        },
+                    );
+                });
+            });
 
             Ok(())
         })
