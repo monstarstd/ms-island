@@ -865,7 +865,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     if (dockEdge === "top") return "h-[36px] rounded-t-none rounded-b-[16px] border-t-0 px-3.5 py-1.5 cursor-pointer";
     if (dockEdge === "left") return "h-[36px] rounded-l-none rounded-r-[18px] border-l-0 px-3.5 py-1.5 cursor-pointer";
     if (dockEdge === "right") return "h-[36px] rounded-r-none rounded-l-[18px] border-r-0 px-3.5 py-1.5 cursor-pointer";
-    return "h-[38px] rounded-full px-4 py-1.5 cursor-pointer";
+    return "h-[38px] rounded-[19px] px-4 py-1.5 cursor-pointer";
   })();
 
   // 15. Sync Exact Interactive Bounds to Rust for Zero-Flicker Transparent Click-Through
