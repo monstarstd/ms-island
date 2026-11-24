@@ -1,7 +1,8 @@
 use std::f32::consts::PI;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use windows::Win32::Media::Audio::{
     eConsole, eRender, IAudioCaptureClient, IAudioClient, IMMDeviceEnumerator, MMDeviceEnumerator,
     AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK,
@@ -16,12 +17,18 @@ const TARGET_FREQS: [f32; NUM_BANDS] = [70.0, 150.0, 320.0, 680.0, 1400.0, 2800.
 
 pub struct AudioSpectrumCapture {
     bands: Arc<Mutex<[f32; NUM_BANDS]>>,
+    start_instant: Instant,
+    last_read_ms: Arc<AtomicU64>,
 }
 
 impl AudioSpectrumCapture {
     pub fn start() -> Self {
         let bands = Arc::new(Mutex::new([0.0f32; NUM_BANDS]));
+        let start_instant = Instant::now();
+        let last_read_ms = Arc::new(AtomicU64::new(0));
+
         let bands_bg = bands.clone();
+        let last_read_bg = last_read_ms.clone();
 
         thread::spawn(move || {
             // Precompute Hann window once (zero trig inside hot loop)
@@ -32,18 +39,34 @@ impl AudioSpectrumCapture {
             }
 
             loop {
-                let _ = unsafe { run_loopback_session(&bands_bg, &hann) };
+                // Demand-driven: sleep at 0% CPU when no UI visualizer has requested bands recently
+                let now_ms = start_instant.elapsed().as_millis() as u64;
+                let last_ms = last_read_bg.load(Ordering::Relaxed);
+                if last_ms == 0 || now_ms.saturating_sub(last_ms) > 1500 {
+                    thread::sleep(Duration::from_millis(160));
+                    continue;
+                }
+
+                let _ = unsafe {
+                    run_loopback_session(&bands_bg, &hann, start_instant, &last_read_bg)
+                };
                 if let Ok(mut b) = bands_bg.lock() {
                     *b = [0.0; NUM_BANDS];
                 }
-                thread::sleep(Duration::from_millis(1200));
+                thread::sleep(Duration::from_millis(250));
             }
         });
 
-        Self { bands }
+        Self {
+            bands,
+            start_instant,
+            last_read_ms,
+        }
     }
 
     pub fn get_bands(&self) -> [f32; NUM_BANDS] {
+        let now_ms = self.start_instant.elapsed().as_millis() as u64;
+        self.last_read_ms.store(now_ms.max(1), Ordering::Relaxed);
         self.bands.lock().map(|b| *b).unwrap_or([0.0; NUM_BANDS])
     }
 }
@@ -85,6 +108,8 @@ fn compute_goertzel_bands(
 unsafe fn run_loopback_session(
     bands: &Arc<Mutex<[f32; NUM_BANDS]>>,
     hann: &[f32; WINDOW_SIZE],
+    start_instant: Instant,
+    last_read_ms: &Arc<AtomicU64>,
 ) -> windows::core::Result<()> {
     let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
 
@@ -132,6 +157,13 @@ unsafe fn run_loopback_session(
 
     loop {
         thread::sleep(Duration::from_millis(45));
+
+        // Release WASAPI loopback immediately when no visualizer is active
+        let now_ms = start_instant.elapsed().as_millis() as u64;
+        let last_ms = last_read_ms.load(Ordering::Relaxed);
+        if now_ms.saturating_sub(last_ms) > 1500 {
+            break;
+        }
 
         let mut packet_length = match capture_client.GetNextPacketSize() {
             Ok(len) => len,

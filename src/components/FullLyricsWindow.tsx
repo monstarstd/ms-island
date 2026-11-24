@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { X, Copy, Check, FileText, Search, Loader2, Music, Sun, Moon, Pin, PinOff, Minus, Plus } from "lucide-react";
 import { MediaTrack } from "../types/media";
 import { ThemeMode } from "../types/theme";
@@ -67,7 +68,6 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
     const isTauri = !!(window as any).__TAURI_INTERNALS__;
     if (isTauri) {
       try {
-        const { invoke } = await import("@tauri-apps/api/core");
         await invoke("set_lyrics_always_on_top", { pinned: next });
       } catch (e) {
         console.error("Failed to toggle pin:", e);
@@ -100,7 +100,6 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
 
     setIsSearching(true);
     try {
-      const { invoke } = await import("@tauri-apps/api/core");
       const res = await invoke<string>("search_lyrics_manual", { query: searchQuery.trim() });
       setCustomLyrics(res);
     } catch (err) {
@@ -120,28 +119,28 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
     <div
       onMouseEnter={() => setIsWindowHovered(true)}
       onMouseLeave={() => setIsWindowHovered(false)}
-      className={`w-full h-full flex flex-col rounded-2xl overflow-hidden select-none transition-all duration-300 ease-out ${
+      className={`w-full h-full flex flex-col rounded-2xl overflow-hidden select-none border transition-[border-color,box-shadow] duration-150 ease-out ${
         isWindowHovered
           ? isLight
-            ? "border border-zinc-300 shadow-2xl text-zinc-900"
-            : "border border-zinc-800 shadow-2xl text-zinc-100"
+            ? "border-zinc-300 shadow-2xl text-zinc-900"
+            : "border-zinc-800 shadow-2xl text-zinc-100"
           : isLight
-            ? "border border-transparent shadow-none text-zinc-900"
-            : "border border-transparent shadow-none text-zinc-100"
+            ? "border-transparent shadow-none text-zinc-900"
+            : "border-transparent shadow-none text-zinc-100"
       }`}
     >
-      {/* ================================================================ */}
-      {/* TOP SOLID ZONE: Title Header + Search Bar (ALWAYS 100% SOLID)    */}
-      {/* ================================================================ */}
+      {/* TOP SOLID ZONE: Always identical 1px border geometry -> ZERO hover jiggle */}
       <div
-        className={`flex-shrink-0 transition-all duration-300 ${
+        className={`flex-shrink-0 border-b transition-[border-radius,box-shadow] duration-150 ${
           isLight
             ? "bg-[#efefec] border-zinc-300"
             : "bg-[#121215] border-zinc-800"
         } ${
           isWindowHovered
-            ? "rounded-t-2xl border-b"
-            : "rounded-2xl border shadow-xl shadow-black/40"
+            ? "rounded-t-2xl"
+            : isLight
+              ? "rounded-2xl shadow-lg ring-1 ring-inset ring-zinc-300"
+              : "rounded-2xl shadow-xl shadow-black/40 ring-1 ring-inset ring-zinc-800"
         }`}
       >
         {/* Draggable Native Header */}
@@ -284,12 +283,9 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
         </form>
       </div>
 
-      {/* ================================================================ */}
-      {/* LYRICS BODY BOX: Smoothly fades container when not hovered,      */}
-      {/* leaving only crisp floating lyrics text!                         */}
-      {/* ================================================================ */}
+      {/* LYRICS BODY BOX: Fades background smoothly on unhover without changing font weight (0px reflow) */}
       <div
-        className={`flex-1 px-6 py-5 overflow-y-auto select-text transition-all duration-300 ease-out ${
+        className={`flex-1 px-6 py-5 overflow-y-auto select-text transition-[background-color] duration-150 ease-out ${
           isWindowHovered
             ? isLight
               ? "bg-[#f8f8f7]"
@@ -301,14 +297,14 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
       >
         {displayedLyrics ? (
           <div
-            className={`leading-[1.8] whitespace-pre-line tracking-[0.01em] max-w-[42ch] transition-all duration-300 ${
+            className={`leading-[1.8] whitespace-pre-line tracking-[0.01em] max-w-[42ch] transition-[color,text-shadow] duration-150 ${
               isLight
                 ? isWindowHovered
                   ? "text-zinc-800"
-                  : "text-zinc-950 font-medium [text-shadow:0_1px_6px_rgba(255,255,255,0.95),0_0_2px_rgba(255,255,255,0.9)]"
+                  : "text-zinc-950 [text-shadow:0_1px_6px_rgba(255,255,255,0.95),0_0_2px_rgba(255,255,255,0.9)]"
                 : isWindowHovered
                   ? "text-zinc-200"
-                  : "text-white font-medium [text-shadow:0_1px_6px_rgba(0,0,0,0.95),0_0_3px_rgba(0,0,0,0.9)]"
+                  : "text-white [text-shadow:0_1px_6px_rgba(0,0,0,0.95),0_0_3px_rgba(0,0,0,0.9)]"
             }`}
             style={{ fontSize: `${fontSize}px` }}
           >
@@ -316,7 +312,7 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
           </div>
         ) : (
           <div
-            className={`w-full h-full flex flex-col items-center justify-center text-center py-10 px-4 transition-all duration-300 ${
+            className={`w-full h-full flex flex-col items-center justify-center text-center py-10 px-4 transition-[text-shadow] duration-150 ${
               isWindowHovered
                 ? ""
                 : isLight
@@ -334,14 +330,14 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
         )}
       </div>
 
-      {/* Footer (Draggable + Typography Controls, fades cleanly when unhovered) */}
+      {/* Footer (Draggable + Typography Controls, fades cleanly via opacity only) */}
       <div
         onMouseDown={(e) => {
           if (e.button !== 0) return;
           if ((e.target as HTMLElement).closest("button")) return;
           onStartDrag();
         }}
-        className={`px-4 py-2 border-t flex items-center justify-between text-[11px] cursor-move transition-all duration-300 ${
+        className={`px-4 py-2 border-t flex items-center justify-between text-[11px] cursor-move transition-opacity duration-150 ${
           isLight ? "bg-[#efefec] border-zinc-300 text-zinc-600" : "bg-[#121215] border-zinc-800 text-zinc-400"
         } ${isWindowHovered ? "opacity-100" : "opacity-0 pointer-events-none"}`}
       >

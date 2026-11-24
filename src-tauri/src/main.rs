@@ -21,7 +21,10 @@ use system_tools::{
 };
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, DragDropEvent, Emitter, Manager, State, WindowEvent};
+use tauri::{
+    AppHandle, DragDropEvent, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder,
+    WindowEvent,
+};
 use weather::WeatherInfo;
 
 /// Poison-safe mutex helper so a panic on one thread can never cascade across threads
@@ -45,6 +48,7 @@ struct AppState {
     is_lyrics_open: Arc<Mutex<bool>>,
     clipboard_history: Arc<Mutex<ClipboardSyncPayload>>,
     auto_hide_fullscreen: Arc<AtomicBool>,
+    own_hwnds: Arc<Mutex<Vec<isize>>>,
 }
 
 // -----------------------------------------------------------------------------
@@ -141,11 +145,71 @@ fn center_island_on_primary_monitor(app: &AppHandle) {
     }
 }
 
+fn get_or_create_lyrics_window(app: &AppHandle, state: &AppState) -> Option<tauri::WebviewWindow> {
+    if let Some(existing) = app.get_webview_window("lyrics") {
+        return Some(existing);
+    }
+
+    let win = WebviewWindowBuilder::new(
+        app,
+        "lyrics",
+        WebviewUrl::App("index.html?mode=lyrics".into()),
+    )
+    .title("Lyrics - MS Island")
+    .inner_size(440.0, 580.0)
+    .visible(false)
+    .resizable(true)
+    .decorations(false)
+    .transparent(true)
+    .always_on_top(true)
+    .skip_taskbar(false)
+    .shadow(false)
+    .build()
+    .ok()?;
+
+    if let Ok(h) = win.hwnd() {
+        let mut hwnds = lock_safe(&state.own_hwnds);
+        let val = h.0 as isize;
+        if !hwnds.contains(&val) {
+            hwnds.push(val);
+        }
+    }
+
+    if let Ok(Some(monitor)) = app.primary_monitor() {
+        let screen_size = monitor.size();
+        let screen_w = screen_size.width as i32;
+        let screen_h = screen_size.height as i32;
+        let lyrics_w = win.outer_size().map(|s| s.width as i32).unwrap_or(440);
+        let lyrics_h = win.outer_size().map(|s| s.height as i32).unwrap_or(580);
+        let lyrics_x = (screen_w - lyrics_w - 40).max(20);
+        let lyrics_y = ((screen_h - lyrics_h) / 2).max(40);
+        let _ = win.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
+            x: lyrics_x,
+            y: lyrics_y,
+        }));
+    }
+
+    let win_clone = win.clone();
+    let app_close = app.clone();
+    win.on_window_event(move |event| {
+        if let WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+            let _ = win_clone.hide();
+            if let Some(st) = app_close.try_state::<AppState>() {
+                *lock_safe(&st.is_lyrics_open) = false;
+            }
+            let _ = app_close.emit("lyrics-visibility-changed", false);
+        }
+    });
+
+    Some(win)
+}
+
 #[tauri::command]
 fn toggle_lyrics_window(app: AppHandle, state: State<AppState>) -> bool {
     let mut open_lock = lock_safe(&state.is_lyrics_open);
 
-    if let Some(lyrics_win) = app.get_webview_window("lyrics") {
+    if let Some(lyrics_win) = get_or_create_lyrics_window(&app, &state) {
         let currently_visible = lyrics_win.is_visible().unwrap_or(false);
         let currently_minimized = lyrics_win.is_minimized().unwrap_or(false);
         let should_show = !currently_visible || currently_minimized;
@@ -520,6 +584,7 @@ fn main() {
         windows_history_enabled: false,
     }));
     let auto_hide_fullscreen = Arc::new(AtomicBool::new(true));
+    let own_hwnds = Arc::new(Mutex::new(Vec::<isize>::new()));
 
     let media_mgr_clone = media_mgr.clone();
     let cached_track_clone = cached_track.clone();
@@ -527,6 +592,7 @@ fn main() {
     let cached_lyrics_clone = cached_lyrics.clone();
     let clipboard_clone = clipboard_history.clone();
     let auto_hide_clone = auto_hide_fullscreen.clone();
+    let own_hwnds_setup = own_hwnds.clone();
 
     tauri::Builder::default()
         .manage(AppState {
@@ -539,6 +605,7 @@ fn main() {
             is_lyrics_open,
             clipboard_history,
             auto_hide_fullscreen,
+            own_hwnds,
         })
         .invoke_handler(tauri::generate_handler![
             get_current_track,
@@ -638,13 +705,13 @@ fn main() {
                 }
             }
 
-            // 2. Position Windows & Cache Native HWNDs ONCE on main thread
-            let mut own_hwnds: Vec<isize> = Vec::new();
+            // 2. Position Main Window & Cache Native HWND ONCE on main thread
+            // (Lyrics window is lazy-created on demand to save ~45MB WebView2 RAM on startup!)
             center_island_on_primary_monitor(&app_handle);
 
             if let Some(island_win) = app.get_webview_window("island") {
                 if let Ok(h) = island_win.hwnd() {
-                    own_hwnds.push(h.0 as isize);
+                    lock_safe(&own_hwnds_setup).push(h.0 as isize);
                 }
                 let _ = island_win.show();
 
@@ -773,49 +840,7 @@ fn main() {
                 });
             }
 
-            if let Ok(Some(monitor)) = app.primary_monitor() {
-                let screen_size = monitor.size();
-                let screen_w = screen_size.width as i32;
-                let screen_h = screen_size.height as i32;
-
-                if let Some(lyrics_win) = app.get_webview_window("lyrics") {
-                    if let Ok(h) = lyrics_win.hwnd() {
-                        own_hwnds.push(h.0 as isize);
-                    }
-                    let lyrics_w = lyrics_win
-                        .outer_size()
-                        .map(|s| s.width as i32)
-                        .unwrap_or(440);
-                    let lyrics_h = lyrics_win
-                        .outer_size()
-                        .map(|s| s.height as i32)
-                        .unwrap_or(580);
-                    let lyrics_x = (screen_w - lyrics_w - 40).max(0);
-                    let lyrics_y = ((screen_h - lyrics_h) / 2).max(40);
-                    let _ = lyrics_win.set_position(tauri::Position::Physical(
-                        tauri::PhysicalPosition {
-                            x: lyrics_x,
-                            y: lyrics_y,
-                        },
-                    ));
-                    let _ = lyrics_win.hide();
-
-                    let lyrics_win_clone = lyrics_win.clone();
-                    let app_handle_close = app_handle.clone();
-                    lyrics_win.on_window_event(move |event| {
-                        if let WindowEvent::CloseRequested { api, .. } = event {
-                            api.prevent_close();
-                            let _ = lyrics_win_clone.hide();
-                            if let Some(st) = app_handle_close.try_state::<AppState>() {
-                                *lock_safe(&st.is_lyrics_open) = false;
-                            }
-                            let _ = app_handle_close.emit("lyrics-visibility-changed", false);
-                        }
-                    });
-                }
-            }
-
-            // 3A. Dedicated SMTC Media & Lyrics Thread (Isolated MTA COM — NEVER blocked by Clipboard!)
+            // 3A. Dedicated SMTC Media & Lyrics Thread (Isolated MTA COM — zero spam when unchanged)
             let media_for_hotkey = media_mgr_clone.clone();
             let handle_media = app_handle.clone();
             std::thread::spawn(move || {
@@ -828,6 +853,7 @@ fn main() {
 
                 let mut current_lyrics_title = String::new();
                 let mut had_active_track = false;
+                let mut last_emitted_track: Option<MediaTrackInfo> = None;
 
                 loop {
                     let (track_opt, thumb_opt) = {
@@ -847,7 +873,10 @@ fn main() {
                     match track_opt {
                         Some(track) if !track.title.is_empty() => {
                             had_active_track = true;
-                            let _ = handle_media.emit("media-updated", &track);
+                            if last_emitted_track.as_ref() != Some(&track) {
+                                last_emitted_track = Some(track.clone());
+                                let _ = handle_media.emit("media-updated", &track);
+                            }
 
                             if track.title != current_lyrics_title {
                                 current_lyrics_title = track.title.clone();
@@ -884,6 +913,7 @@ fn main() {
                         _ => {
                             if had_active_track {
                                 had_active_track = false;
+                                last_emitted_track = None;
                                 current_lyrics_title.clear();
                                 *lock_safe(&cached_lyrics_clone) = String::new();
                                 let _ = handle_media.emit("media-cleared", ());
@@ -892,12 +922,13 @@ fn main() {
                         }
                     }
 
-                    std::thread::sleep(Duration::from_millis(400));
+                    std::thread::sleep(Duration::from_millis(450));
                 }
             });
 
-            // 3B. Dedicated System, Clipboard (Win+V), Battery & Fullscreen Thread (Isolated MTA COM)
+            // 3B. Dedicated System, Clipboard (Win+V), Battery & Fullscreen Thread (Event-driven Clipboard)
             let handle_bg = app_handle.clone();
+            let own_hwnds_bg = own_hwnds_setup.clone();
             std::thread::spawn(move || {
                 unsafe {
                     let _ = windows::Win32::System::Com::CoInitializeEx(
@@ -949,10 +980,11 @@ fn main() {
                         );
                     }
 
-                    // B. Windows Clipboard History (Win + V) Two-Way Sync + Local Fallback
+                    // B. Windows Clipboard History (Win + V) — strictly sequence-driven (0 idle WinRT churn)
+                    let prev_seq = last_clip_seq;
                     let clip_changed_text =
                         system_tools::read_clipboard_text_if_changed(&mut last_clip_seq);
-                    if tick_count == 1 || clip_changed_text.is_some() || tick_count % 4 == 0 {
+                    if tick_count == 1 || last_clip_seq != prev_seq {
                         if let Some(win_items) = system_tools::fetch_windows_clipboard_history() {
                             let next = ClipboardSyncPayload {
                                 items: win_items,
@@ -1020,7 +1052,8 @@ fn main() {
 
                         // Wait 3s after boot before enabling fullscreen hide so Windows login transitions never hide it
                         if tick_count > 6 && auto_hide_clone.load(Ordering::Relaxed) {
-                            let is_fs = system_tools::is_other_app_fullscreen(&own_hwnds);
+                            let hwnds_snapshot = lock_safe(&own_hwnds_bg).clone();
+                            let is_fs = system_tools::is_other_app_fullscreen(&hwnds_snapshot);
                             if is_fs && !hidden_by_fullscreen {
                                 hidden_by_fullscreen = true;
                                 let h_ui = handle_bg.clone();

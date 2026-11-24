@@ -25,7 +25,6 @@ interface IdleBarProps {
   currentTime: Date;
   media: MediaTrack;
   visualizerStyle: VisualizerStyle;
-  spectrum: number[];
   isLyricsOpen: boolean;
   isDragOver: boolean;
   showVolumeHud: boolean;
@@ -49,7 +48,6 @@ export const IdleBar: React.FC<IdleBarProps> = React.memo(
     currentTime,
     media,
     visualizerStyle,
-    spectrum,
     isLyricsOpen,
     isDragOver,
     showVolumeHud,
@@ -151,7 +149,6 @@ export const IdleBar: React.FC<IdleBarProps> = React.memo(
                 isPlaying={media.isPlaying}
                 style={visualizerStyle}
                 isLight={isLight}
-                spectrum={spectrum}
                 compact
               />
               <span className="text-[11px] font-medium truncate">

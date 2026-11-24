@@ -20,7 +20,6 @@ interface MusicTabProps {
   media: MediaTrack;
   isLyricsOpen: boolean;
   visualizerStyle: VisualizerStyle;
-  spectrum: number[];
   volume: VolumeInfo;
   onSetVisualizer: (style: VisualizerStyle) => void;
   onTogglePlayPause: () => void;
@@ -38,7 +37,6 @@ export const MusicTab: React.FC<MusicTabProps> = React.memo(
     media,
     isLyricsOpen,
     visualizerStyle,
-    spectrum,
     volume,
     onSetVisualizer,
     onTogglePlayPause,
@@ -83,7 +81,6 @@ export const MusicTab: React.FC<MusicTabProps> = React.memo(
               isPlaying={media.isPlaying}
               style={visualizerStyle}
               isLight={isLight}
-              spectrum={spectrum}
             />
             <button
               onClick={onToggleLyricsWindow}

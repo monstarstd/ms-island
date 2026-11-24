@@ -90,7 +90,9 @@ pub fn spawn_downloads_watcher(app: AppHandle) {
         let mut last_emitted_active: Option<ActiveDownloadInfo> = None;
 
         loop {
-            std::thread::sleep(Duration::from_millis(650));
+            // Adaptive polling: fast 500ms while a download is running, lean 1500ms when idle
+            let sleep_ms = if active_partials.is_empty() { 1500 } else { 500 };
+            std::thread::sleep(Duration::from_millis(sleep_ms));
 
             let entries = match std::fs::read_dir(&downloads_dir) {
                 Ok(rd) => rd,

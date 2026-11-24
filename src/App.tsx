@@ -108,6 +108,19 @@ export const App: React.FC = () => {
       }),
       listen<boolean>("lyrics-visibility-changed", (event) => {
         setIsLyricsOpen(event.payload);
+        if (event.payload && windowMode === "lyrics") {
+          Promise.all([
+            invoke<MediaTrack | null>("get_current_track"),
+            invoke<string>("get_full_lyrics"),
+          ])
+            .then(async ([track, fullLyrics]) => {
+              if (isMounted) {
+                if (track && track.title) await applyTrackUpdate(track);
+                if (fullLyrics) setLyricsText(fullLyrics);
+              }
+            })
+            .catch(() => {});
+        }
       }),
       listen<string>("lyrics-updated", (event) => {
         setLyricsText(event.payload);
@@ -158,14 +171,14 @@ export const App: React.FC = () => {
       })
       .catch((err) => console.error("Failed initial state hydration:", err));
 
-    const safetyPoll = setInterval(syncCachedState, 1200);
+    const safetyPoll = windowMode === "island" ? setInterval(syncCachedState, 1500) : null;
 
     return () => {
       isMounted = false;
-      clearInterval(safetyPoll);
+      if (safetyPoll) clearInterval(safetyPoll);
       unlisteners.forEach((fn) => fn());
     };
-  }, []);
+  }, [windowMode]);
 
   // Toggle Theme Handler (Dark <-> Light)
   const handleToggleTheme = () => {

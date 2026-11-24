@@ -142,8 +142,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     };
   }, [isTauri]);
 
-  // 2. Real WASAPI Audio Spectrum & Visualizer Preference
-  const [spectrum, setSpectrum] = useState<number[]>([0, 0, 0, 0, 0, 0, 0, 0]);
+  // 2. Visualizer Preference (WASAPI spectrum polling is isolated inside AudioVisualizer)
   const [visualizerStyle, setVisualizerStyle] = useState<VisualizerStyle>(() => {
     const saved = localStorage.getItem("ms-island-visualizer");
     return saved === "wave" || saved === "dots" || saved === "bars" ? saved : "bars";
@@ -154,37 +153,22 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     localStorage.setItem("ms-island-visualizer", style);
   }, []);
 
-  useEffect(() => {
-    if (!isTauri || !media.isPlaying) {
-      setSpectrum((prev) => (prev.some((v) => v > 0) ? [0, 0, 0, 0, 0, 0, 0, 0] : prev));
-      return;
-    }
-    let mounted = true;
-    const id = setInterval(async () => {
-      try {
-        const bands = await invoke<number[]>("get_audio_spectrum");
-        if (mounted && Array.isArray(bands) && bands.length === 8) {
-          setSpectrum((prev) => {
-            for (let i = 0; i < 8; i++) {
-              if (Math.abs(prev[i] - bands[i]) > 0.015) return bands;
-            }
-            return prev;
-          });
-        }
-      } catch {}
-    }, 85);
-    return () => {
-      mounted = false;
-      clearInterval(id);
-    };
-  }, [isTauri, media.isPlaying]);
-
-  // 3. Real-Time Clock
+  // 3. Smart Real-Time Clock (1 render/min when idle; 1s tick ONLY on Clock tab)
   const [currentTime, setCurrentTime] = useState<Date>(() => new Date());
+  const needsSecondsTick = isHovered && activeTab === "clock";
   useEffect(() => {
-    const id = setInterval(() => setCurrentTime(new Date()), 1000);
+    const id = window.setInterval(() => {
+      const now = new Date();
+      if (needsSecondsTick) {
+        setCurrentTime(now);
+      } else {
+        setCurrentTime((prev) =>
+          prev.getMinutes() === now.getMinutes() && prev.getHours() === now.getHours() ? prev : now
+        );
+      }
+    }, 1000);
     return () => clearInterval(id);
-  }, []);
+  }, [needsSecondsTick]);
 
   // 4. Transient Toasts (Caps Lock, Charger, Audio Output, Refresh)
   const [toast, setToast] = useState<IslandToast | null>(null);
@@ -198,20 +182,21 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
 
   useEffect(() => {
     if (!isTauri) return;
+    let active = true;
     let unlisten: (() => void) | undefined;
-    import("@tauri-apps/api/event").then(({ listen }) => {
-      listen<IslandToast>("island-toast", (e) => {
-        showToast(e.payload.kind, e.payload.message, 2200);
-      }).then((fn) => {
-        unlisten = fn;
-      });
+    listen<IslandToast>("island-toast", (e) => {
+      showToast(e.payload.kind, e.payload.message, 2200);
+    }).then((fn) => {
+      if (active) unlisten = fn;
+      else fn();
     });
     return () => {
+      active = false;
       if (unlisten) unlisten();
     };
   }, [isTauri, showToast]);
 
-  // 5. Volume, Scroll Wheel HUD & Audio Output Switcher
+  // 5. Volume, Scroll Wheel HUD & Audio Output Switcher (zero idle polling)
   const [volume, setVolume] = useState<VolumeInfo>({ level: 50, muted: false });
   const [showVolumeHud, setShowVolumeHud] = useState(false);
   const volumeHudTimeoutRef = useRef<number | null>(null);
@@ -221,40 +206,35 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   const loadAudioDevices = useCallback(async () => {
     if (!isTauri) return;
     try {
-      const { invoke } = await import("@tauri-apps/api/core");
       const list = await invoke<AudioDeviceInfo[]>("get_audio_devices");
       setAudioDevices(list);
     } catch {}
   }, [isTauri]);
 
-  useEffect(() => {
+  const loadVolume = useCallback(async () => {
     if (!isTauri) return;
-    let mounted = true;
-    const fetchVol = async () => {
-      try {
-        const { invoke } = await import("@tauri-apps/api/core");
-        const v = await invoke<VolumeInfo>("get_volume");
-        if (mounted) setVolume(v);
-      } catch {}
-    };
-    fetchVol();
-    loadAudioDevices();
-    const id = setInterval(fetchVol, 4000);
-    return () => {
-      mounted = false;
-      clearInterval(id);
-    };
-  }, [isTauri, loadAudioDevices]);
+    try {
+      const v = await invoke<VolumeInfo>("get_volume");
+      setVolume(v);
+    } catch {}
+  }, [isTauri]);
 
   useEffect(() => {
-    if (activeTab === "system" && isHovered) loadAudioDevices();
-  }, [activeTab, isHovered, loadAudioDevices]);
+    if (!isTauri) return;
+    loadVolume();
+    loadAudioDevices();
+  }, [isTauri, loadVolume, loadAudioDevices]);
+
+  useEffect(() => {
+    if (!isHovered) return;
+    loadVolume();
+    if (activeTab === "system") loadAudioDevices();
+  }, [isHovered, activeTab, loadVolume, loadAudioDevices]);
 
   const handleSwitchAudioDevice = useCallback(
     async (device: AudioDeviceInfo) => {
       if (!isTauri) return;
       try {
-        const { invoke } = await import("@tauri-apps/api/core");
         await invoke("switch_audio_device", { deviceId: device.id });
         await loadAudioDevices();
         showToast("audio", `Output: ${device.name}`, 2000);
@@ -269,7 +249,6 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
       setVolume((prev) => ({ level: clamped, muted: clamped === 0 ? prev.muted : false }));
       if (isTauri) {
         try {
-          const { invoke } = await import("@tauri-apps/api/core");
           const updated = await invoke<VolumeInfo>("set_volume", { level: clamped });
           setVolume(updated);
         } catch {}
@@ -282,7 +261,6 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     setVolume((prev) => ({ ...prev, muted: !prev.muted }));
     if (isTauri) {
       try {
-        const { invoke } = await import("@tauri-apps/api/core");
         const updated = await invoke<VolumeInfo>("toggle_mute");
         setVolume(updated);
       } catch {}
@@ -304,7 +282,6 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
 
     if (isTauri) {
       try {
-        const { invoke } = await import("@tauri-apps/api/core");
         const updated = await invoke<VolumeInfo>("adjust_volume", { delta });
         setVolume(updated);
       } catch {}
@@ -476,7 +453,6 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   const loadClipboardHistory = useCallback(async () => {
     if (!isTauri) return;
     try {
-      const { invoke } = await import("@tauri-apps/api/core");
       const payload = await invoke<ClipboardSyncPayload>("get_clipboard_history");
       setClipboardHistory(payload.items || []);
       setWinClipboardSynced(Boolean(payload.windowsHistoryEnabled));
@@ -485,17 +461,18 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
 
   useEffect(() => {
     if (!isTauri) return;
+    let active = true;
     let unlisten: (() => void) | undefined;
     loadClipboardHistory();
-    import("@tauri-apps/api/event").then(({ listen }) => {
-      listen<ClipboardSyncPayload>("clipboard-updated", (e) => {
-        setClipboardHistory(e.payload.items || []);
-        setWinClipboardSynced(Boolean(e.payload.windowsHistoryEnabled));
-      }).then((fn) => {
-        unlisten = fn;
-      });
+    listen<ClipboardSyncPayload>("clipboard-updated", (e) => {
+      setClipboardHistory(e.payload.items || []);
+      setWinClipboardSynced(Boolean(e.payload.windowsHistoryEnabled));
+    }).then((fn) => {
+      if (active) unlisten = fn;
+      else fn();
     });
     return () => {
+      active = false;
       if (unlisten) unlisten();
     };
   }, [isTauri, loadClipboardHistory]);
@@ -515,7 +492,6 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     async (item: ClipboardEntry) => {
       if (isTauri) {
         try {
-          const { invoke } = await import("@tauri-apps/api/core");
           await invoke("copy_clipboard_item", { id: item.id, text: item.text });
           return;
         } catch {}
@@ -530,7 +506,6 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
       setClipboardHistory((prev) => prev.filter((item) => item.id !== id));
       if (!isTauri) return;
       try {
-        const { invoke } = await import("@tauri-apps/api/core");
         const updated = await invoke<ClipboardSyncPayload>("delete_clipboard_item", { id });
         setClipboardHistory(updated.items || []);
         setWinClipboardSynced(Boolean(updated.windowsHistoryEnabled));
@@ -543,7 +518,6 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     setClipboardHistory([]);
     if (!isTauri) return;
     try {
-      const { invoke } = await import("@tauri-apps/api/core");
       const updated = await invoke<ClipboardSyncPayload>("clear_clipboard_history");
       setClipboardHistory(updated.items || []);
       setWinClipboardSynced(Boolean(updated.windowsHistoryEnabled));
@@ -570,15 +544,12 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
 
   useEffect(() => {
     if (!isTauri) return;
-    let unlistenDrag: (() => void) | undefined;
-    let unlistenDrop: (() => void) | undefined;
-    let unlistenDlProgress: (() => void) | undefined;
-    let unlistenDlDone: (() => void) | undefined;
-    let unlistenHotkey: (() => void) | undefined;
+    let active = true;
+    let unlisteners: Array<() => void> = [];
 
-    import("@tauri-apps/api/event").then(async ({ listen }) => {
-      unlistenDrag = await listen<boolean>("shelf-drag-state", (e) => setIsDragOver(e.payload));
-      unlistenDrop = await listen<ShelfFileInfo[]>("shelf-files-dropped", (e) => {
+    Promise.all([
+      listen<boolean>("shelf-drag-state", (e) => setIsDragOver(e.payload)),
+      listen<ShelfFileInfo[]>("shelf-files-dropped", (e) => {
         setIsDragOver(false);
         setShelfFiles((prev) => {
           const existing = new Set(prev.map((f) => f.path));
@@ -586,32 +557,32 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
         });
         setActiveTab("shelf");
         setIsHovered(true);
-      });
-      unlistenDlProgress = await listen<ActiveDownloadInfo | null>("downloads-updated", (e) => {
+      }),
+      listen<ActiveDownloadInfo | null>("downloads-updated", (e) => {
         setActiveDownload(e.payload);
-      });
-      unlistenDlDone = await listen<ShelfFileInfo>("download-completed", (e) => {
+      }),
+      listen<ShelfFileInfo>("download-completed", (e) => {
         const downloadedItem: ShelfFileInfo = { ...e.payload, fromDownload: true };
         setShelfFiles((prev) => {
           const filtered = prev.filter((f) => f.path !== downloadedItem.path);
           return [downloadedItem, ...filtered].slice(0, 12);
         });
-      });
-      unlistenHotkey = await listen("island-hotkey-toggle", () => {
+      }),
+      listen("island-hotkey-toggle", () => {
         setContextMenu(null);
         setIsHovered((prev) => {
           if (prev) setActiveTab("music");
           return !prev;
         });
-      });
+      }),
+    ]).then((fns) => {
+      if (active) unlisteners = fns;
+      else fns.forEach((fn) => fn());
     });
 
     return () => {
-      if (unlistenDrag) unlistenDrag();
-      if (unlistenDrop) unlistenDrop();
-      if (unlistenDlProgress) unlistenDlProgress();
-      if (unlistenDlDone) unlistenDlDone();
-      if (unlistenHotkey) unlistenHotkey();
+      active = false;
+      unlisteners.forEach((fn) => fn());
     };
   }, [isTauri]);
 
@@ -712,7 +683,6 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     let mounted = true;
     const pollStats = async () => {
       try {
-        const { invoke } = await import("@tauri-apps/api/core");
         const [stats, bat] = await Promise.all([
           invoke<SystemStats>("get_system_stats"),
           invoke<BatteryInfo>("get_battery_info"),
@@ -736,7 +706,6 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     if (!isTauri || autostartBusy) return;
     setAutostartBusy(true);
     try {
-      const { invoke } = await import("@tauri-apps/api/core");
       const result = await invoke<boolean>("set_autostart", { enabled: !autostartEnabled });
       setAutostartEnabled(result);
     } catch {
@@ -807,7 +776,6 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     setActiveTab("music");
     if (isTauri) {
       try {
-        const { invoke } = await import("@tauri-apps/api/core");
         await invoke("reset_island_position");
         loadWeather();
         loadAudioDevices();
@@ -819,12 +787,11 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   const handleQuitApp = useCallback(async () => {
     setContextMenu(null);
     if (isTauri) {
-      const { invoke } = await import("@tauri-apps/api/core");
       await invoke("quit_app");
     }
   }, [isTauri]);
 
-  // 13. Strict Physical Pill Hover Handlers
+  // 13. Snappy Physical Pill Hover Handlers (45ms open, 75ms close)
   const handleMouseEnter = () => {
     mouseInsideRef.current = true;
     if (contextMenu) return;
@@ -836,7 +803,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
       hoverEnterTimeoutRef.current = window.setTimeout(() => {
         hoverEnterTimeoutRef.current = null;
         setIsHovered(true);
-      }, 110);
+      }, 45);
     }
   };
 
@@ -851,7 +818,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
       if (isDraggingOutRef.current || mouseInsideRef.current) return;
       setIsHovered(false);
       setActiveTab("music");
-    }, 260);
+    }, 75);
   };
 
   // 14. Adaptive Dynamic Width & Edge-to-Pill Geometry
@@ -919,7 +886,6 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
             currentTime={currentTime}
             media={media}
             visualizerStyle={visualizerStyle}
-            spectrum={spectrum}
             isLyricsOpen={isLyricsOpen}
             isDragOver={isDragOver}
             showVolumeHud={showVolumeHud}
@@ -1017,7 +983,6 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
                   media={media}
                   isLyricsOpen={isLyricsOpen}
                   visualizerStyle={visualizerStyle}
-                  spectrum={spectrum}
                   volume={volume}
                   onSetVisualizer={handleSetVisualizer}
                   onTogglePlayPause={onTogglePlayPause}
