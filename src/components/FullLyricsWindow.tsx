@@ -28,9 +28,9 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
   const [isSearching, setIsSearching] = useState(false);
   const [customLyrics, setCustomLyrics] = useState<string | null>(null);
   const [isPinned, setIsPinned] = useState(true);
-  const [backdropMode, setBackdropMode] = useState<"smoked" | "acrylic">(() => {
+  const [backdropMode, setBackdropMode] = useState<"solid" | "smoked" | "acrylic">(() => {
     const saved = localStorage.getItem("ms-island-lyrics-backdrop");
-    return saved === "acrylic" ? "acrylic" : "smoked";
+    return saved === "acrylic" || saved === "smoked" || saved === "solid" ? saved : "solid";
   });
   const [fontSize, setFontSize] = useState<number>(() => {
     const saved = Number(localStorage.getItem("ms-island-lyrics-font"));
@@ -39,8 +39,9 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
 
   const isLight = theme === "light";
   const isAcrylic = backdropMode === "acrylic";
+  const isSmoked = backdropMode === "smoked";
 
-  // Sync native Windows DWM Acrylic / Smoked backdrop whenever mode or theme changes
+  // Sync native Windows DWM Acrylic / Matte backdrop whenever mode or theme changes
   useEffect(() => {
     const isTauri = !!(window as any).__TAURI_INTERNALS__;
     if (!isTauri) return;
@@ -49,7 +50,7 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
     });
   }, [backdropMode, isLight]);
 
-  const handleSetBackdrop = (next: "smoked" | "acrylic") => {
+  const handleSetBackdrop = (next: "solid" | "smoked" | "acrylic") => {
     setBackdropMode(next);
     localStorage.setItem("ms-island-lyrics-backdrop", next);
   };
@@ -130,44 +131,55 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
 
   const displayedLyrics = customLyrics || lyricsText;
 
-  const btnCls = isLight
-    ? "bg-zinc-200/80 hover:bg-zinc-300 text-zinc-800 border-zinc-300 active:scale-[0.97]"
-    : "bg-zinc-800/90 hover:bg-zinc-700 text-zinc-200 border-zinc-700 active:scale-[0.97]";
+  const btnCls = isAcrylic
+    ? isLight
+      ? "bg-black/[0.06] hover:bg-black/[0.12] text-zinc-900 border-black/12 active:scale-[0.97]"
+      : "bg-white/[0.08] hover:bg-white/[0.15] text-zinc-100 border-white/12 active:scale-[0.97]"
+    : isLight
+      ? "bg-zinc-200/80 hover:bg-zinc-300 text-zinc-800 border-zinc-300 active:scale-[0.97]"
+      : "bg-zinc-800/90 hover:bg-zinc-700 text-zinc-200 border-zinc-700 active:scale-[0.97]";
 
   const shellRadiusCls = isAcrylic ? "rounded-lg" : "rounded-2xl";
   const topRadiusCls = isAcrylic ? "rounded-t-lg" : "rounded-t-2xl";
+  const dividerCls = isAcrylic
+    ? isLight
+      ? "border-black/10"
+      : "border-white/10"
+    : isLight
+      ? "border-zinc-300"
+      : "border-zinc-800";
 
   return (
     <div
       onMouseEnter={() => setIsWindowHovered(true)}
       onMouseLeave={() => setIsWindowHovered(false)}
       className={`w-full h-full flex flex-col ${shellRadiusCls} overflow-hidden select-none border transition-[border-color,box-shadow] duration-150 ease-out ${
-        isWindowHovered
+        isAcrylic
           ? isLight
-            ? "border-zinc-300 shadow-2xl text-zinc-900"
-            : "border-zinc-800 shadow-2xl text-zinc-100"
-          : isLight
-            ? "border-zinc-300/65 shadow-lg text-zinc-900"
-            : "border-zinc-800/70 shadow-lg text-zinc-100"
+            ? "bg-transparent border-black/15 text-zinc-900"
+            : "bg-transparent border-white/15 text-zinc-100"
+          : isSmoked && !isWindowHovered
+            ? isLight
+              ? "border-zinc-300/65 shadow-lg text-zinc-900"
+              : "border-zinc-800/70 shadow-lg text-zinc-100"
+            : isLight
+              ? "border-zinc-300 shadow-2xl text-zinc-900"
+              : "border-zinc-800 shadow-2xl text-zinc-100"
       }`}
     >
-      {/* TOP SOLID ZONE: Always identical 1px border geometry -> ZERO hover jiggle */}
+      {/* TOP ZONE: Solid in Solid/Smoked modes, unified transparent Acrylic in Acrylic mode */}
       <div
-        className={`flex-shrink-0 border-b transition-[background-color,border-color] duration-150 ${topRadiusCls} ${
-          isLight
-            ? isAcrylic
-              ? "bg-[#efefec]/90 border-zinc-300/80"
-              : "bg-[#efefec] border-zinc-300"
-            : isAcrylic
-              ? "bg-[#121215]/88 border-zinc-800/80"
-              : "bg-[#121215] border-zinc-800"
+        className={`flex-shrink-0 border-b transition-[background-color,border-color] duration-150 ${topRadiusCls} ${dividerCls} ${
+          isAcrylic
+            ? "bg-transparent"
+            : isLight
+              ? "bg-[#efefec]"
+              : "bg-[#121215]"
         }`}
       >
         {/* Draggable Native Header */}
         <div
-          className={`flex items-center justify-between px-4 py-2.5 border-b cursor-move transition-colors ${
-            isLight ? "border-zinc-300/90" : "border-zinc-800"
-          }`}
+          className={`flex items-center justify-between px-4 py-2.5 border-b cursor-move transition-colors ${dividerCls}`}
           onMouseDown={(e) => {
             if (e.button !== 0) return;
             if ((e.target as HTMLElement).closest("button")) return;
@@ -268,16 +280,14 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
           </div>
         </div>
 
-        {/* Manual Search Bar (ALWAYS SOLID) */}
+        {/* Manual Search Bar (Unified Acrylic in Acrylic mode, Solid in Solid/Smoked) */}
         <form
           onSubmit={handleManualSearch}
           className={`flex items-center gap-1.5 px-3.5 py-2 transition-colors ${
-            isLight
-              ? isAcrylic
-                ? "bg-[#f3f3f0]/88"
-                : "bg-[#f3f3f0]"
-              : isAcrylic
-                ? "bg-[#101013]/85"
+            isAcrylic
+              ? "bg-transparent"
+              : isLight
+                ? "bg-[#f3f3f0]"
                 : "bg-[#101013]"
           }`}
         >
@@ -288,12 +298,16 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search song title or artist..."
               className={`w-full text-xs rounded-lg px-2.5 py-1.5 pl-8 focus:outline-none focus-visible:ring-1 focus-visible:ring-[#f97316] transition-colors border ${
-                isLight
-                  ? "bg-white border-zinc-300 text-zinc-900 placeholder-zinc-500"
-                  : "bg-zinc-900 border-zinc-800 text-zinc-100 placeholder-zinc-500"
+                isAcrylic
+                  ? isLight
+                    ? "bg-black/[0.06] border-black/15 text-zinc-900 placeholder-zinc-600"
+                    : "bg-white/[0.08] border-white/15 text-zinc-100 placeholder-zinc-400"
+                  : isLight
+                    ? "bg-white border-zinc-300 text-zinc-900 placeholder-zinc-500"
+                    : "bg-zinc-900 border-zinc-800 text-zinc-100 placeholder-zinc-500"
               }`}
             />
-            <Search className="w-3.5 h-3.5 text-zinc-500 absolute left-2.5 top-2" />
+            <Search className={`w-3.5 h-3.5 absolute left-2.5 top-2 ${isAcrylic ? (isLight ? "text-zinc-600" : "text-zinc-400") : "text-zinc-500"}`} />
           </div>
           <button
             type="submit"
@@ -309,24 +323,18 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
         </form>
       </div>
 
-      {/* LYRICS BODY BOX: Smoked Tint (78% -> 100%) or Native Windows Acrylic Blur */}
+      {/* LYRICS BODY BOX: Solid (always 100%) | Smoked (78% -> 100% on hover) | Acrylic (unified glass) */}
       <div
         className={`flex-1 px-6 py-5 overflow-y-auto select-text transition-[background-color] duration-150 ease-out ${
           isAcrylic
-            ? isWindowHovered
+            ? "bg-transparent"
+            : isSmoked && !isWindowHovered
               ? isLight
-                ? "bg-[#f8f8f7]/60"
-                : "bg-[#0c0c0e]/52"
-              : isLight
-                ? "bg-[#f8f8f7]/28"
-                : "bg-[#0c0c0e]/24"
-            : isWindowHovered
-              ? isLight
-                ? "bg-[#f8f8f7]"
-                : "bg-[#0c0c0e]"
-              : isLight
                 ? "bg-[#f8f8f7]/84"
                 : "bg-[#0c0c0e]/78"
+              : isLight
+                ? "bg-[#f8f8f7]"
+                : "bg-[#0c0c0e]"
         }`}
       >
         {displayedLyrics ? (
@@ -350,38 +358,48 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
         )}
       </div>
 
-      {/* Footer: Backdrop Mode (Smoked / Acrylic) + Font Size Controls */}
+      {/* Footer: 3-Mode Selector (Solid / Smoked / Acrylic) + Font Size Controls */}
       <div
         onMouseDown={(e) => {
           if (e.button !== 0) return;
           if ((e.target as HTMLElement).closest("button")) return;
           onStartDrag();
         }}
-        className={`px-3.5 py-2 border-t flex items-center justify-between text-[11px] cursor-move transition-[background-color,opacity] duration-150 ${
-          isLight
-            ? isAcrylic
-              ? "bg-[#efefec]/88 border-zinc-300/80 text-zinc-600"
-              : "bg-[#efefec] border-zinc-300 text-zinc-600"
-            : isAcrylic
-              ? "bg-[#121215]/88 border-zinc-800/80 text-zinc-400"
-              : "bg-[#121215] border-zinc-800 text-zinc-400"
-        } ${isWindowHovered ? "opacity-100" : "opacity-75"}`}
+        className={`px-3.5 py-2 border-t flex items-center justify-between text-[11px] cursor-move transition-[background-color,opacity] duration-150 ${dividerCls} ${
+          isAcrylic
+            ? isLight
+              ? "bg-transparent text-zinc-700"
+              : "bg-transparent text-zinc-300"
+            : isLight
+              ? "bg-[#efefec] text-zinc-600"
+              : "bg-[#121215] text-zinc-400"
+        } ${isSmoked && !isWindowHovered ? "opacity-80" : "opacity-100"}`}
       >
         <div
-          className={`grid grid-cols-2 p-0.5 rounded-lg border text-[10px] font-medium ${
-            isLight ? "bg-zinc-200/80 border-zinc-300" : "bg-[#0c0c0e] border-zinc-800"
+          className={`grid grid-cols-3 p-0.5 rounded-lg border text-[10px] font-medium ${
+            isAcrylic
+              ? isLight
+                ? "bg-black/[0.06] border-black/12"
+                : "bg-white/[0.07] border-white/12"
+              : isLight
+                ? "bg-zinc-200/80 border-zinc-300"
+                : "bg-[#0c0c0e] border-zinc-800"
           }`}
           title="Lyrics background style"
         >
-          {(["smoked", "acrylic"] as const).map((mode) => (
+          {(["solid", "smoked", "acrylic"] as const).map((mode) => (
             <button
               key={mode}
               onClick={() => handleSetBackdrop(mode)}
               className={`px-2 py-0.5 rounded-md capitalize transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-[#f97316] ${
                 backdropMode === mode
-                  ? isLight
-                    ? "bg-white text-zinc-950 font-semibold shadow-sm"
-                    : "bg-zinc-800 text-white font-semibold"
+                  ? isAcrylic
+                    ? isLight
+                      ? "bg-white/90 text-zinc-950 font-semibold shadow-sm"
+                      : "bg-white/20 text-white font-semibold"
+                    : isLight
+                      ? "bg-white text-zinc-950 font-semibold shadow-sm"
+                      : "bg-zinc-800 text-white font-semibold"
                   : isLight
                     ? "text-zinc-600 hover:text-zinc-950"
                     : "text-zinc-400 hover:text-white"
