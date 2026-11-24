@@ -142,7 +142,7 @@ export const ShelfTab: React.FC<ShelfTabProps> = React.memo(
                       {file.name}
                     </div>
                     <div className={`text-[10px] font-mono tabular-nums ${mutedText}`}>
-                      {formatBytes(file.sizeBytes)}
+                      {file.isDir ? "Folder" : formatBytes(file.sizeBytes)}
                       {file.fromDownload ? " · Browser Download" : ""}
                     </div>
                   </div>

@@ -78,7 +78,7 @@ export const StopwatchTab: React.FC<StopwatchTabProps> = React.memo(
             ) : (
               stopwatchLaps.map((lapMs, idx) => (
                 <div
-                  key={idx}
+                  key={`${stopwatchLaps.length - idx}-${Math.round(lapMs)}`}
                   className={`grid grid-cols-2 items-center px-2 py-1 rounded-md ${
                     isLight ? "bg-zinc-100 text-zinc-800" : "bg-[#0c0c0e] text-zinc-200"
                   }`}

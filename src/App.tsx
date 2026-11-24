@@ -1,4 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { emit, listen } from "@tauri-apps/api/event";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { DynamicIsland } from "./components/DynamicIsland";
 import { FullLyricsWindow } from "./components/FullLyricsWindow";
 import { MediaTrack } from "./types/media";
@@ -37,14 +40,12 @@ export const App: React.FC = () => {
   useEffect(() => {
     const isTauri = !!(window as any).__TAURI_INTERNALS__;
     if (isTauri) {
-      import("@tauri-apps/api/webviewWindow").then(({ getCurrentWebviewWindow }) => {
-        try {
-          const label = getCurrentWebviewWindow().label;
-          if (label) setWindowMode(label);
-        } catch (e) {
-          console.error("Failed to get window label", e);
-        }
-      });
+      try {
+        const label = getCurrentWebviewWindow().label;
+        if (label) setWindowMode(label);
+      } catch (e) {
+        console.error("Failed to get window label", e);
+      }
     }
   }, []);
 
@@ -59,12 +60,11 @@ export const App: React.FC = () => {
     const applyTrackUpdate = async (track: MediaTrack) => {
       if (!isMounted || !track || !track.title) return;
 
-      // Only fetch base64 album cover artwork ONCE when thumbId actually changes!
+      // Only fetch base64 album cover artwork ONCE when thumbId actually changes
       const incomingThumbId = track.thumbId || null;
       if (incomingThumbId && incomingThumbId !== lastThumbIdRef.current) {
         lastThumbIdRef.current = incomingThumbId;
         try {
-          const { invoke } = await import("@tauri-apps/api/core");
           const dataUrl = await invoke<string | null>("get_current_thumbnail");
           cachedThumbDataRef.current = dataUrl || undefined;
         } catch {
@@ -76,42 +76,62 @@ export const App: React.FC = () => {
       }
 
       if (isMounted) {
-        setMedia({
-          ...track,
-          thumbnail: cachedThumbDataRef.current,
+        const nextThumb = cachedThumbDataRef.current;
+        setMedia((prev) => {
+          if (
+            prev.title === track.title &&
+            prev.artist === track.artist &&
+            prev.album === track.album &&
+            prev.sourceApp === track.sourceApp &&
+            prev.isPlaying === track.isPlaying &&
+            prev.positionSec === track.positionSec &&
+            prev.durationSec === track.durationSec &&
+            prev.thumbId === track.thumbId &&
+            prev.thumbnail === nextThumb
+          ) {
+            return prev;
+          }
+          return {
+            ...track,
+            thumbnail: nextThumb,
+          };
         });
       }
     };
 
-    import("@tauri-apps/api/event").then(async ({ listen }) => {
-      const u1 = await listen<ThemeMode>("theme-changed", (event) => {
+    Promise.all([
+      listen<ThemeMode>("theme-changed", (event) => {
         if (event.payload === "dark" || event.payload === "light") {
           setTheme(event.payload);
           localStorage.setItem("ms-island-theme", event.payload);
         }
-      });
-      const u2 = await listen<boolean>("lyrics-visibility-changed", (event) => {
+      }),
+      listen<boolean>("lyrics-visibility-changed", (event) => {
         setIsLyricsOpen(event.payload);
-      });
-      const u3 = await listen<string>("lyrics-updated", (event) => {
+      }),
+      listen<string>("lyrics-updated", (event) => {
         setLyricsText(event.payload);
-      });
-      const u4 = await listen<MediaTrack>("media-updated", (event) => {
+      }),
+      listen<MediaTrack>("media-updated", (event) => {
         applyTrackUpdate(event.payload);
-      });
-      const u5 = await listen("media-cleared", () => {
+      }),
+      listen("media-cleared", () => {
         if (!isMounted) return;
         lastThumbIdRef.current = null;
         cachedThumbDataRef.current = undefined;
-        setMedia(EMPTY_TRACK);
-      });
-      unlisteners = [u1, u2, u3, u4, u5];
+        setMedia((prev) => (prev.title ? EMPTY_TRACK : prev));
+      }),
+    ]).then((fns) => {
+      if (isMounted) {
+        unlisteners = fns;
+      } else {
+        fns.forEach((fn) => fn());
+      }
     });
 
-    // Initial state hydration + lightweight 1200ms RAM-cache safety sync (0 WinRT calls!)
+    // Initial state hydration + lightweight 1200ms RAM-cache safety sync (0 WinRT calls)
     const syncCachedState = async () => {
       try {
-        const { invoke } = await import("@tauri-apps/api/core");
         const track = await invoke<MediaTrack | null>("get_current_track");
         if (!isMounted) return;
         if (track && track.title) {
@@ -124,22 +144,19 @@ export const App: React.FC = () => {
       } catch {}
     };
 
-    import("@tauri-apps/api/core").then(async ({ invoke }) => {
-      try {
-        const [track, fullLyrics, isOpen] = await Promise.all([
-          invoke<MediaTrack | null>("get_current_track"),
-          invoke<string>("get_full_lyrics"),
-          invoke<boolean>("is_lyrics_window_open"),
-        ]);
+    Promise.all([
+      invoke<MediaTrack | null>("get_current_track"),
+      invoke<string>("get_full_lyrics"),
+      invoke<boolean>("is_lyrics_window_open"),
+    ])
+      .then(async ([track, fullLyrics, isOpen]) => {
         if (isMounted) {
           if (track && track.title) await applyTrackUpdate(track);
           if (fullLyrics) setLyricsText(fullLyrics);
           setIsLyricsOpen(isOpen);
         }
-      } catch (err) {
-        console.error("Failed initial state hydration:", err);
-      }
-    });
+      })
+      .catch((err) => console.error("Failed initial state hydration:", err));
 
     const safetyPoll = setInterval(syncCachedState, 1200);
 
@@ -157,9 +174,7 @@ export const App: React.FC = () => {
     localStorage.setItem("ms-island-theme", nextTheme);
     const isTauri = !!(window as any).__TAURI_INTERNALS__;
     if (isTauri) {
-      import("@tauri-apps/api/event").then(({ emit }) => {
-        emit("theme-changed", nextTheme);
-      });
+      emit("theme-changed", nextTheme);
     }
   };
 
@@ -169,7 +184,6 @@ export const App: React.FC = () => {
     const isTauri = !!(window as any).__TAURI_INTERNALS__;
     if (isTauri) {
       try {
-        const { invoke } = await import("@tauri-apps/api/core");
         await invoke("toggle_play_pause");
       } catch (e) {
         console.error("Failed to invoke play pause:", e);
@@ -181,7 +195,6 @@ export const App: React.FC = () => {
     const isTauri = !!(window as any).__TAURI_INTERNALS__;
     if (isTauri) {
       try {
-        const { invoke } = await import("@tauri-apps/api/core");
         await invoke("skip_next");
       } catch (e) {
         console.error("Failed to invoke skip next:", e);
@@ -193,7 +206,6 @@ export const App: React.FC = () => {
     const isTauri = !!(window as any).__TAURI_INTERNALS__;
     if (isTauri) {
       try {
-        const { invoke } = await import("@tauri-apps/api/core");
         await invoke("skip_prev");
       } catch (e) {
         console.error("Failed to invoke skip prev:", e);
@@ -206,7 +218,6 @@ export const App: React.FC = () => {
     const isTauri = !!(window as any).__TAURI_INTERNALS__;
     if (isTauri) {
       try {
-        const { invoke } = await import("@tauri-apps/api/core");
         await invoke("seek_position", { positionSec: Math.floor(positionSec) });
       } catch (e) {
         console.error("Failed to seek position:", e);
@@ -218,7 +229,6 @@ export const App: React.FC = () => {
     const isTauri = !!(window as any).__TAURI_INTERNALS__;
     if (isTauri) {
       try {
-        const { invoke } = await import("@tauri-apps/api/core");
         const isOpen = await invoke<boolean>("toggle_lyrics_window");
         setIsLyricsOpen(isOpen);
       } catch (e) {
@@ -234,7 +244,6 @@ export const App: React.FC = () => {
     const isTauri = !!(window as any).__TAURI_INTERNALS__;
     if (isTauri) {
       try {
-        const { invoke } = await import("@tauri-apps/api/core");
         await invoke("close_lyrics_window");
       } catch (e) {
         console.error("Failed to close lyrics window:", e);
@@ -246,11 +255,9 @@ export const App: React.FC = () => {
     const isTauri = !!(window as any).__TAURI_INTERNALS__;
     if (isTauri) {
       try {
-        const { invoke } = await import("@tauri-apps/api/core");
         await invoke("start_window_drag");
       } catch {
         try {
-          const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
           await getCurrentWebviewWindow().startDragging();
         } catch (e) {
           console.error("Failed to start dragging window:", e);

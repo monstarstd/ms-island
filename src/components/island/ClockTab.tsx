@@ -75,7 +75,19 @@ export const ClockTab: React.FC<ClockTabProps> = React.memo(({ tokens, currentTi
           >
             <ChevronLeft className="w-3.5 h-3.5" />
           </button>
-          <span className="text-center">{currentMonthName}</span>
+          <button
+            onClick={() => setCalendarMonthOffset(0)}
+            className={`text-center rounded px-1.5 py-0.5 transition-colors ${focusRing} ${
+              calendarMonthOffset !== 0
+                ? isLight
+                  ? "hover:bg-zinc-100 text-[#f97316]"
+                  : "hover:bg-zinc-800 text-[#f97316]"
+                : ""
+            }`}
+            title={calendarMonthOffset !== 0 ? "Return to current month" : currentMonthName}
+          >
+            {currentMonthName}
+          </button>
           <button
             onClick={() => setCalendarMonthOffset((prev) => prev + 1)}
             className={`p-1 rounded-md ${focusRing} ${
@@ -91,7 +103,7 @@ export const ClockTab: React.FC<ClockTabProps> = React.memo(({ tokens, currentTi
           <span>S</span><span>M</span><span>T</span><span>W</span><span>T</span><span>F</span><span>S</span>
         </div>
 
-        <div className="grid grid-cols-7 gap-y-0.5 text-center text-[10px] tabular-nums">
+        <div className="grid grid-cols-7 gap-y-[1px] text-center text-[10px] tabular-nums">
           {Array.from({ length: firstDayWeekday }).map((_, i) => (
             <span key={`empty-${i}`} className="text-transparent">.</span>
           ))}
@@ -101,7 +113,7 @@ export const ClockTab: React.FC<ClockTabProps> = React.memo(({ tokens, currentTi
             return (
               <span
                 key={`day-${dayNum}`}
-                className={`h-[19px] flex items-center justify-center rounded-full ${
+                className={`h-[17px] flex items-center justify-center rounded-full ${
                   isToday
                     ? "bg-[#f97316] text-white font-bold"
                     : isLight

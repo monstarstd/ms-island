@@ -183,19 +183,26 @@ async fn search_lrclib(client: &reqwest::Client, query: &str) -> Option<String> 
     None
 }
 
-/// Fetches lyrics from Genius API + scrape fallback
+/// Fetches lyrics from Genius API + scrape fallback (fails fast on non-200/Cloudflare)
 async fn search_genius(client: &reqwest::Client, query: &str) -> Option<String> {
     if query.trim().is_empty() {
         return None;
     }
     let url = format!("https://genius.com/api/search/multi?q={}", urlencoding(query.trim()));
     let resp = client.get(&url).send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
     let data: GeniusSearchResponse = resp.json().await.ok()?;
 
     let first_hit = data.response.sections.into_iter().flat_map(|s| s.hits).next()?;
 
     let song_url = format!("https://genius.com{}", first_hit.result.path);
-    let page_html = client.get(&song_url).send().await.ok()?.text().await.ok()?;
+    let page_resp = client.get(&song_url).send().await.ok()?;
+    if !page_resp.status().is_success() {
+        return None;
+    }
+    let page_html = page_resp.text().await.ok()?;
 
     let container_re = genius_container_re();
     let br_re = html_br_re();
@@ -254,45 +261,38 @@ pub async fn fetch_full_lyrics(
         }
     }
 
-    // Query variant 1: "Artist Title"
+    // Try fast LRCLIB queries first across variants
     let q1 = format!("{} {}", clean_a, clean_t).trim().to_string();
     if !q1.is_empty() {
         if let Some(lyrics) = search_lrclib(client, &q1).await {
             return Some(lyrics);
         }
-        if let Some(lyrics) = search_genius(client, &q1).await {
-            return Some(lyrics);
-        }
     }
 
-    // Query variant 2: "Title Artist"
     let q2 = format!("{} {}", clean_t, clean_a).trim().to_string();
     if !q2.is_empty() && q2 != q1 {
         if let Some(lyrics) = search_lrclib(client, &q2).await {
             return Some(lyrics);
         }
-        if let Some(lyrics) = search_genius(client, &q2).await {
-            return Some(lyrics);
-        }
     }
 
-    // Query variant 3: Just "Title"
     if !clean_t.is_empty() && clean_t != q1 && clean_t != q2 {
         if let Some(lyrics) = search_lrclib(client, &clean_t).await {
             return Some(lyrics);
         }
-        if let Some(lyrics) = search_genius(client, &clean_t).await {
-            return Some(lyrics);
-        }
     }
 
-    // Query variant 4: Cleaned raw title without splitting
     let cleaned_raw = standalone_brackets_re().replace_all(raw_title, "").trim().to_string();
     if !cleaned_raw.is_empty() && cleaned_raw != q1 && cleaned_raw != q2 && cleaned_raw != clean_t {
         if let Some(lyrics) = search_lrclib(client, &cleaned_raw).await {
             return Some(lyrics);
         }
-        if let Some(lyrics) = search_genius(client, &cleaned_raw).await {
+    }
+
+    // Single best-effort Genius fallback only if all LRCLIB variants missed
+    let fallback_q = if !q1.is_empty() { &q1 } else { &cleaned_raw };
+    if !fallback_q.is_empty() {
+        if let Some(lyrics) = search_genius(client, fallback_q).await {
             return Some(lyrics);
         }
     }

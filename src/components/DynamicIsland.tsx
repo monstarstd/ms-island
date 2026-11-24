@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import {
   Clock,
   CloudSun,
@@ -105,11 +107,12 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   // 1. Dock Edge & Drag Motion Sync
   useEffect(() => {
     if (!isTauri) return;
+    let active = true;
     let unlistenEdge: (() => void) | undefined;
     let unlistenMove: (() => void) | undefined;
 
-    import("@tauri-apps/api/event").then(async ({ listen }) => {
-      unlistenEdge = await listen<string>("island-dock-changed", (e) => {
+    Promise.all([
+      listen<string>("island-dock-changed", (e) => {
         if (
           e.payload === "top" ||
           e.payload === "left" ||
@@ -118,13 +121,22 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
         ) {
           setDockEdge(e.payload);
         }
-      });
-      unlistenMove = await listen<boolean>("island-moving", (e) => {
+      }),
+      listen<boolean>("island-moving", (e) => {
         setIsMoving(e.payload);
-      });
+      }),
+    ]).then(([uEdge, uMove]) => {
+      if (active) {
+        unlistenEdge = uEdge;
+        unlistenMove = uMove;
+      } else {
+        uEdge();
+        uMove();
+      }
     });
 
     return () => {
+      active = false;
       if (unlistenEdge) unlistenEdge();
       if (unlistenMove) unlistenMove();
     };
@@ -144,19 +156,23 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
 
   useEffect(() => {
     if (!isTauri || !media.isPlaying) {
-      setSpectrum([0, 0, 0, 0, 0, 0, 0, 0]);
+      setSpectrum((prev) => (prev.some((v) => v > 0) ? [0, 0, 0, 0, 0, 0, 0, 0] : prev));
       return;
     }
     let mounted = true;
     const id = setInterval(async () => {
       try {
-        const { invoke } = await import("@tauri-apps/api/core");
         const bands = await invoke<number[]>("get_audio_spectrum");
         if (mounted && Array.isArray(bands) && bands.length === 8) {
-          setSpectrum(bands);
+          setSpectrum((prev) => {
+            for (let i = 0; i < 8; i++) {
+              if (Math.abs(prev[i] - bands[i]) > 0.015) return bands;
+            }
+            return prev;
+          });
         }
       } catch {}
-    }, 80);
+    }, 85);
     return () => {
       mounted = false;
       clearInterval(id);
@@ -300,38 +316,37 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     }
   };
 
-  // 6. Countdown Timer
+  // 6. Countdown Timer (Drift-Free Interval + Safe Clamped Adjust)
   const [timerDuration, setTimerDuration] = useState(300);
   const [timerRemaining, setTimerRemaining] = useState(300);
   const [isTimerRunning, setIsTimerRunning] = useState(false);
   const [isTimerFinished, setIsTimerFinished] = useState(false);
 
   useEffect(() => {
-    if (!isTimerRunning || timerRemaining <= 0) return;
+    if (!isTimerRunning) return;
     const id = window.setInterval(() => {
-      setTimerRemaining((prev) => {
-        if (prev <= 1) {
-          setIsTimerRunning(false);
-          setIsTimerFinished(true);
-          playSoftChime();
-          return 0;
-        }
-        return prev - 1;
-      });
+      setTimerRemaining((prev) => (prev <= 1 ? 0 : prev - 1));
     }, 1000);
     return () => clearInterval(id);
+  }, [isTimerRunning]);
+
+  useEffect(() => {
+    if (isTimerRunning && timerRemaining === 0) {
+      setIsTimerRunning(false);
+      setIsTimerFinished(true);
+      playSoftChime();
+    }
   }, [isTimerRunning, timerRemaining]);
 
   const handleStartPauseTimer = useCallback(() => {
-    setTimerRemaining((rem) => {
-      if (rem === 0) {
-        setIsTimerFinished(false);
-        return timerDuration;
-      }
-      return rem;
-    });
+    if (!isTimerRunning && timerRemaining === 0) {
+      setIsTimerFinished(false);
+      setTimerRemaining(timerDuration);
+      setIsTimerRunning(true);
+      return;
+    }
     setIsTimerRunning((r) => !r);
-  }, [timerDuration]);
+  }, [isTimerRunning, timerRemaining, timerDuration]);
 
   const handleResetTimer = useCallback(() => {
     setIsTimerRunning(false);
@@ -349,16 +364,21 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   const handleAdjustTimer = useCallback(
     (diff: number) => {
       setTimerRemaining((prev) => {
-        const next = Math.max(10, prev + diff);
-        if (!isTimerRunning) setTimerDuration(next);
+        const floor = isTimerRunning ? 1 : Math.min(10, prev);
+        const next = diff < 0 ? Math.max(floor, prev + diff) : Math.max(10, prev + diff);
+        if (!isTimerRunning) {
+          setTimerDuration(next);
+        } else if (next > timerDuration) {
+          setTimerDuration(next);
+        }
         return next;
       });
       setIsTimerFinished(false);
     },
-    [isTimerRunning]
+    [isTimerRunning, timerDuration]
   );
 
-  // 7. Millisecond Stopwatch
+  // 7. Millisecond Stopwatch (~30fps UI tick backed by exact performance.now())
   const [stopwatchTimeMs, setStopwatchTimeMs] = useState(0);
   const [isStopwatchRunning, setIsStopwatchRunning] = useState(false);
   const [stopwatchLaps, setStopwatchLaps] = useState<number[]>([]);
@@ -367,26 +387,24 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
 
   useEffect(() => {
     if (!isStopwatchRunning) return;
-    let animFrame: number;
     stopwatchStartRef.current = performance.now();
-    const update = () => {
+    const id = window.setInterval(() => {
       setStopwatchTimeMs(stopwatchAccRef.current + (performance.now() - stopwatchStartRef.current));
-      animFrame = requestAnimationFrame(update);
-    };
-    animFrame = requestAnimationFrame(update);
-    return () => cancelAnimationFrame(animFrame);
+    }, 33);
+    return () => clearInterval(id);
   }, [isStopwatchRunning]);
 
   const handleToggleStopwatch = useCallback(() => {
-    setIsStopwatchRunning((running) => {
-      if (running) {
-        stopwatchAccRef.current += performance.now() - stopwatchStartRef.current;
-        return false;
-      }
+    if (isStopwatchRunning) {
+      const elapsed = stopwatchAccRef.current + (performance.now() - stopwatchStartRef.current);
+      stopwatchAccRef.current = elapsed;
+      setStopwatchTimeMs(elapsed);
+      setIsStopwatchRunning(false);
+    } else {
       stopwatchStartRef.current = performance.now();
-      return true;
-    });
-  }, []);
+      setIsStopwatchRunning(true);
+    }
+  }, [isStopwatchRunning]);
 
   const handleResetStopwatch = useCallback(() => {
     setIsStopwatchRunning(false);
@@ -396,10 +414,13 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   }, []);
 
   const handleLapStopwatch = useCallback(() => {
-    if (isStopwatchRunning) setStopwatchLaps((prev) => [stopwatchTimeMs, ...prev]);
-  }, [isStopwatchRunning, stopwatchTimeMs]);
+    if (isStopwatchRunning) {
+      const nowMs = stopwatchAccRef.current + (performance.now() - stopwatchStartRef.current);
+      setStopwatchLaps((prev) => [nowMs, ...prev]);
+    }
+  }, [isStopwatchRunning]);
 
-  // 8. Weather
+  // 8. Weather (Single API call on city search)
   const [weather, setWeather] = useState<WeatherInfo | null>(null);
   const [savedWeatherCity, setSavedWeatherCity] = useState(
     () => localStorage.getItem("ms-island-weather-city") || ""
@@ -413,7 +434,6 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
       setWeatherLoading(true);
       setWeatherError("");
       try {
-        const { invoke } = await import("@tauri-apps/api/core");
         const targetCity = cityOverride !== undefined ? cityOverride : savedWeatherCity;
         const data = await invoke<WeatherInfo>("get_weather", {
           city: targetCity.trim() ? targetCity.trim() : null,
@@ -437,11 +457,14 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
 
   const handleSearchWeatherCity = useCallback(
     (nextCity: string) => {
-      setSavedWeatherCity(nextCity);
       localStorage.setItem("ms-island-weather-city", nextCity);
-      loadWeather(nextCity);
+      if (nextCity === savedWeatherCity) {
+        loadWeather(nextCity);
+      } else {
+        setSavedWeatherCity(nextCity);
+      }
     },
-    [loadWeather]
+    [savedWeatherCity, loadWeather]
   );
 
   // 9. Notes & Windows Win+V Clipboard Two-Way Sync
@@ -539,6 +562,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   const [isDragOver, setIsDragOver] = useState(false);
   const [activeDownload, setActiveDownload] = useState<ActiveDownloadInfo | null>(null);
   const isDraggingOutRef = useRef(false);
+  const mouseInsideRef = useRef(false);
 
   useEffect(() => {
     localStorage.setItem("ms-island-shelf", JSON.stringify(shelfFiles));
@@ -594,19 +618,19 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   const handleOpenShelfFile = useCallback(
     async (path: string) => {
       if (!isTauri) return;
-      const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("open_shelf_file", { path });
+      const ok = await invoke<boolean>("open_shelf_file", { path });
+      if (!ok) showToast("shelf", "File no longer exists on disk", 2200);
     },
-    [isTauri]
+    [isTauri, showToast]
   );
 
   const handleRevealShelfFile = useCallback(
     async (path: string) => {
       if (!isTauri) return;
-      const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("reveal_shelf_file", { path });
+      const ok = await invoke<boolean>("reveal_shelf_file", { path });
+      if (!ok) showToast("shelf", "File no longer exists on disk", 2200);
     },
-    [isTauri]
+    [isTauri, showToast]
   );
 
   const handleDragOutShelfFile = useCallback(
@@ -614,15 +638,24 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
       if (!isTauri || isDraggingOutRef.current) return;
       isDraggingOutRef.current = true;
       try {
-        const { invoke } = await import("@tauri-apps/api/core");
         await invoke("start_file_drag_out", { path });
-      } catch (e) {
-        console.error("OLE drag-out failed:", e);
+      } catch (e: any) {
+        const msg = typeof e === "string" ? e : "Could not drag file";
+        showToast("shelf", msg.includes("exists") ? "File no longer exists on disk" : msg, 2200);
       } finally {
         isDraggingOutRef.current = false;
+        if (!mouseInsideRef.current) {
+          if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
+          hoverTimeoutRef.current = window.setTimeout(() => {
+            if (!mouseInsideRef.current && !isDraggingOutRef.current) {
+              setIsHovered(false);
+              setActiveTab("music");
+            }
+          }, 220);
+        }
       }
     },
-    [isTauri]
+    [isTauri, showToast]
   );
 
   const handleRemoveShelfFile = useCallback((path: string) => {
@@ -646,25 +679,29 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   const [cpuHistory, setCpuHistory] = useState<number[]>(() => Array(14).fill(6));
   const [autostartEnabled, setAutostartEnabled] = useState(false);
   const [autostartBusy, setAutostartBusy] = useState(false);
-  const [autoHideFullscreen, setAutoHideFullscreen] = useState(true);
+  const [autoHideFullscreen, setAutoHideFullscreen] = useState<boolean>(() => {
+    const saved = localStorage.getItem("ms-island-autohide-fs");
+    return saved === null ? true : saved === "true";
+  });
 
   useEffect(() => {
     if (!isTauri) return;
     let mounted = true;
-    import("@tauri-apps/api/core").then(async ({ invoke }) => {
-      try {
-        const [autoStart, autoHide, bat] = await Promise.all([
-          invoke<boolean>("get_autostart"),
-          invoke<boolean>("get_auto_hide_fullscreen"),
-          invoke<BatteryInfo>("get_battery_info"),
-        ]);
+    const savedAutoHide = localStorage.getItem("ms-island-autohide-fs");
+    const desiredAutoHide = savedAutoHide === null ? true : savedAutoHide === "true";
+    Promise.all([
+      invoke<boolean>("get_autostart"),
+      invoke<boolean>("set_auto_hide_fullscreen", { enabled: desiredAutoHide }),
+      invoke<BatteryInfo>("get_battery_info"),
+    ])
+      .then(([autoStart, autoHide, bat]) => {
         if (mounted) {
           setAutostartEnabled(autoStart);
           setAutoHideFullscreen(autoHide);
           setBattery(bat);
         }
-      } catch {}
-    });
+      })
+      .catch(() => {});
     return () => {
       mounted = false;
     };
@@ -710,10 +747,11 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
 
   const handleToggleAutoHideFullscreen = useCallback(async () => {
     if (!isTauri) return;
+    const next = !autoHideFullscreen;
+    localStorage.setItem("ms-island-autohide-fs", String(next));
     try {
-      const { invoke } = await import("@tauri-apps/api/core");
       const result = await invoke<boolean>("set_auto_hide_fullscreen", {
-        enabled: !autoHideFullscreen,
+        enabled: next,
       });
       setAutoHideFullscreen(result);
     } catch {}
@@ -788,6 +826,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
 
   // 13. Strict Physical Pill Hover Handlers
   const handleMouseEnter = () => {
+    mouseInsideRef.current = true;
     if (contextMenu) return;
     if (hoverTimeoutRef.current) {
       clearTimeout(hoverTimeoutRef.current);
@@ -802,13 +841,14 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   };
 
   const handleMouseLeave = () => {
+    mouseInsideRef.current = false;
     if (contextMenu || isDraggingOutRef.current) return;
     if (hoverEnterTimeoutRef.current) {
       clearTimeout(hoverEnterTimeoutRef.current);
       hoverEnterTimeoutRef.current = null;
     }
     hoverTimeoutRef.current = window.setTimeout(() => {
-      if (isDraggingOutRef.current) return;
+      if (isDraggingOutRef.current || mouseInsideRef.current) return;
       setIsHovered(false);
       setActiveTab("music");
     }, 260);
@@ -861,7 +901,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   })();
 
   return (
-    <div className={`relative w-full h-full flex items-start transition-all duration-300 ${outerAlignCls}`}>
+    <div className={`relative w-full h-full flex items-start ${outerAlignCls}`}>
       <div
         onMouseEnter={handleMouseEnter}
         onMouseLeave={handleMouseLeave}
@@ -896,7 +936,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
             onStartDrag={onStartDrag}
           />
         ) : (
-          <div className="w-full h-full grid grid-rows-[auto_1fr] gap-2.5 select-none island-content-enter">
+          <div className="w-[486px] h-[226px] mx-auto grid grid-rows-[auto_1fr] gap-2.5 select-none island-panel-fade">
             {/* Navigation Bar */}
             <div
               className={`grid grid-cols-[1fr_auto] items-center gap-2 pb-2 border-b ${

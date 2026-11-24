@@ -69,7 +69,7 @@ export const IdleBar: React.FC<IdleBarProps> = React.memo(
 
     return (
       <div
-        className="w-full h-full grid grid-cols-[auto_1fr_auto] items-center gap-2.5 select-none island-content-enter"
+        className="w-full h-full grid grid-cols-[auto_1fr_auto] items-center gap-2.5 select-none island-panel-fade"
         onMouseDown={(e) => {
           if (e.button !== 0) return;
           if ((e.target as HTMLElement).closest("button")) return;

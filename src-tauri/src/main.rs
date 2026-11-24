@@ -651,6 +651,7 @@ fn main() {
                 let handle_drop = app_handle.clone();
                 let last_edge = Arc::new(Mutex::new(String::from("top")));
                 let move_seq = Arc::new(AtomicU64::new(0));
+                let is_moving_flag = Arc::new(AtomicBool::new(false));
                 let is_snapping = Arc::new(AtomicBool::new(false));
                 let snap_flag_evt = is_snapping.clone();
 
@@ -713,9 +714,12 @@ fn main() {
                         }
 
                         let seq = move_seq.fetch_add(1, Ordering::SeqCst) + 1;
-                        let _ = handle_drop.emit("island-moving", true);
+                        if !is_moving_flag.swap(true, Ordering::SeqCst) {
+                            let _ = handle_drop.emit("island-moving", true);
+                        }
 
                         let seq_check = move_seq.clone();
+                        let moving_reset = is_moving_flag.clone();
                         let h_snap = handle_drop.clone();
                         let snap_guard = snap_flag_evt.clone();
                         let edge_owned = edge.to_string();
@@ -727,7 +731,9 @@ fn main() {
                             if seq_check.load(Ordering::SeqCst) != seq {
                                 return;
                             }
-                            let _ = h_snap.emit("island-moving", false);
+                            if moving_reset.swap(false, Ordering::SeqCst) {
+                                let _ = h_snap.emit("island-moving", false);
+                            }
 
                             let target = match edge_owned.as_str() {
                                 "top" if cur_y != 0 => {

@@ -39,10 +39,15 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
     setCustomLyrics(null);
   }, [media.title]);
 
-  // Escape key closes window cleanly
+  // Escape key blurs search input first, otherwise closes window cleanly
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        const target = e.target as HTMLElement | null;
+        if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) {
+          target.blur();
+          return;
+        }
         onClose();
       }
     };
@@ -310,11 +315,19 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
             {displayedLyrics}
           </div>
         ) : (
-          <div className="w-full h-full flex flex-col items-center justify-center text-center py-10 px-4">
-            <p className={`text-xs font-medium ${isLight ? "text-zinc-700" : "text-zinc-300"}`}>
+          <div
+            className={`w-full h-full flex flex-col items-center justify-center text-center py-10 px-4 transition-all duration-300 ${
+              isWindowHovered
+                ? ""
+                : isLight
+                  ? "[text-shadow:0_1px_6px_rgba(255,255,255,0.95)]"
+                  : "[text-shadow:0_1px_6px_rgba(0,0,0,0.95)]"
+            }`}
+          >
+            <p className={`text-xs font-medium ${isLight ? "text-zinc-800" : "text-zinc-200"}`}>
               Waiting for audio playback
             </p>
-            <p className={`mt-1 text-[11px] ${isLight ? "text-zinc-500" : "text-zinc-400"}`}>
+            <p className={`mt-1 text-[11px] ${isLight ? "text-zinc-600" : "text-zinc-400"}`}>
               Play a track in YouTube or Spotify, or search manually above.
             </p>
           </div>

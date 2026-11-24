@@ -406,7 +406,7 @@ pub fn get_battery_info() -> BatteryInfo {
     let mut status = SYSTEM_POWER_STATUS::default();
     unsafe {
         if GetSystemPowerStatus(&mut status).is_ok() {
-            let has_battery = status.BatteryFlag != 128 && status.BatteryFlag != 255;
+            let has_battery = (status.BatteryFlag & 128) == 0 && status.BatteryFlag != 255;
             let percent = if status.BatteryLifePercent <= 100 {
                 status.BatteryLifePercent
             } else {
@@ -490,6 +490,9 @@ pub fn is_other_app_fullscreen(own_hwnds: &[isize]) -> bool {
 // -----------------------------------------------------------------------------
 
 pub fn is_windows_clipboard_history_enabled() -> bool {
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+    }
     windows::ApplicationModel::DataTransfer::Clipboard::IsHistoryEnabled().unwrap_or(false)
 }
 
@@ -497,6 +500,10 @@ pub fn fetch_windows_clipboard_history() -> Option<Vec<ClipboardEntry>> {
     use windows::ApplicationModel::DataTransfer::{
         Clipboard, ClipboardHistoryItemsResultStatus, StandardDataFormats,
     };
+
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+    }
 
     if !Clipboard::IsHistoryEnabled().unwrap_or(false) {
         return None;
@@ -542,6 +549,10 @@ pub fn fetch_windows_clipboard_history() -> Option<Vec<ClipboardEntry>> {
 pub fn activate_windows_clipboard_item(id: &str, fallback_text: &str) -> bool {
     use windows::ApplicationModel::DataTransfer::Clipboard;
 
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+    }
+
     if !id.is_empty() && Clipboard::IsHistoryEnabled().unwrap_or(false) {
         if let Ok(op) = Clipboard::GetHistoryItemsAsync() {
             if let Ok(res) = op.get() {
@@ -567,6 +578,10 @@ pub fn activate_windows_clipboard_item(id: &str, fallback_text: &str) -> bool {
 pub fn delete_windows_clipboard_item(id: &str) -> bool {
     use windows::ApplicationModel::DataTransfer::Clipboard;
 
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+    }
+
     if id.is_empty() || !Clipboard::IsHistoryEnabled().unwrap_or(false) {
         return false;
     }
@@ -590,6 +605,10 @@ pub fn delete_windows_clipboard_item(id: &str) -> bool {
 
 pub fn clear_windows_clipboard_history() -> bool {
     use windows::ApplicationModel::DataTransfer::Clipboard;
+
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+    }
 
     if Clipboard::IsHistoryEnabled().unwrap_or(false) {
         return Clipboard::ClearHistory().unwrap_or(false);
@@ -687,6 +706,9 @@ pub fn build_shelf_file_info(path: &std::path::Path) -> ShelfFileInfo {
 }
 
 pub fn open_file_path(path: &str) -> bool {
+    if !std::path::Path::new(path).exists() {
+        return false;
+    }
     std::process::Command::new("cmd")
         .args(["/C", "start", "", path])
         .creation_flags(CREATE_NO_WINDOW)
@@ -695,6 +717,9 @@ pub fn open_file_path(path: &str) -> bool {
 }
 
 pub fn reveal_file_in_explorer(path: &str) -> bool {
+    if !std::path::Path::new(path).exists() {
+        return false;
+    }
     std::process::Command::new("explorer")
         .arg(format!("/select,{}", path))
         .spawn()

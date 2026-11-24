@@ -131,7 +131,9 @@ export const TimerTab: React.FC<TimerTabProps> = React.memo(
                   className="h-full bg-[#f97316] transition-all duration-300"
                   style={{
                     width: `${
-                      timerDuration > 0 ? ((timerDuration - timerRemaining) / timerDuration) * 100 : 0
+                      timerDuration > 0
+                        ? Math.max(0, Math.min(100, ((timerDuration - timerRemaining) / timerDuration) * 100))
+                        : 0
                     }%`,
                   }}
                 />

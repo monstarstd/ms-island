@@ -153,12 +153,16 @@ pub fn spawn_downloads_watcher(app: AppHandle) {
                         _ => best_active = Some(info),
                     }
                 } else {
-                    current_files.insert(path.clone());
+                    // Only track non-empty files (or already-known startup files) so Firefox's
+                    // 0-byte placeholder alongside `.part` is not prematurely marked as known.
+                    if meta.len() > 0 || known_files.contains(&path) {
+                        current_files.insert(path.clone());
+                    }
                 }
             }
 
             // Detect completed downloads:
-            // 1) Partial file disappeared AND its final file now exists
+            // 1) Partial file disappeared AND its final non-empty file now exists
             // 2) OR a brand-new completed non-temp file appeared (fast small downloads < 650ms!)
             let mut completed_paths: Vec<PathBuf> = Vec::new();
             let finished_partials: Vec<PathBuf> = active_partials
@@ -169,8 +173,14 @@ pub fn spawn_downloads_watcher(app: AppHandle) {
 
             for partial_path in finished_partials {
                 if let Some(tracked) = active_partials.remove(&partial_path) {
-                    if tracked.final_path.is_file() && !known_files.contains(&tracked.final_path) {
-                        completed_paths.push(tracked.final_path);
+                    if let Ok(meta) = std::fs::metadata(&tracked.final_path) {
+                        if meta.is_file()
+                            && meta.len() > 0
+                            && !known_files.contains(&tracked.final_path)
+                        {
+                            current_files.insert(tracked.final_path.clone());
+                            completed_paths.push(tracked.final_path);
+                        }
                     }
                 }
             }
