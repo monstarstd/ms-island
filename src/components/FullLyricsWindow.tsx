@@ -80,7 +80,11 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
             ? "bg-zinc-100/90 border-zinc-300" 
             : "bg-zinc-900 border-zinc-800"
         }`}
-        onMouseDown={onStartDrag}
+        onMouseDown={(e) => {
+          if (e.button !== 0) return;
+          if ((e.target as HTMLElement).closest("button")) return;
+          onStartDrag();
+        }}
       >
         <div data-tauri-drag-region className="flex items-center gap-2.5 min-w-0 pr-2">
           <FileText className={`w-4 h-4 flex-shrink-0 ${isLight ? "text-zinc-600" : "text-zinc-400"}`} />
@@ -218,12 +222,19 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
         )}
       </div>
 
-      {/* Footer */}
-      <div className={`px-4 py-2 border-t flex items-center justify-between text-[10px] transition-colors ${
-        isLight ? "bg-zinc-100 border-zinc-300 text-zinc-500" : "bg-zinc-900/80 border-zinc-800 text-zinc-500"
-      }`}>
-        <span>Dual Engine: LRCLIB &amp; Genius</span>
-        <span>Drag header to move window anywhere</span>
+      {/* Footer (also draggable for convenience) */}
+      <div
+        data-tauri-drag-region
+        onMouseDown={(e) => {
+          if (e.button !== 0) return;
+          onStartDrag();
+        }}
+        className={`px-4 py-2 border-t flex items-center justify-between text-[10px] cursor-move transition-colors ${
+          isLight ? "bg-zinc-100 border-zinc-300 text-zinc-500" : "bg-zinc-900/80 border-zinc-800 text-zinc-500"
+        }`}
+      >
+        <span data-tauri-drag-region>Dual Engine: LRCLIB &amp; Genius</span>
+        <span data-tauri-drag-region>Drag header to move window anywhere</span>
       </div>
     </div>
   );

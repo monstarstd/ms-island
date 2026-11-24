@@ -223,10 +223,15 @@ export const App: React.FC = () => {
     const isTauri = !!(window as any).__TAURI_INTERNALS__;
     if (isTauri) {
       try {
-        const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
-        await getCurrentWebviewWindow().startDragging();
-      } catch (e) {
-        console.error("Failed to start dragging window:", e);
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("start_window_drag");
+      } catch {
+        try {
+          const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+          await getCurrentWebviewWindow().startDragging();
+        } catch (e) {
+          console.error("Failed to start dragging window:", e);
+        }
       }
     }
   };

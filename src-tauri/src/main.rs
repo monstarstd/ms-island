@@ -145,6 +145,11 @@ fn set_autostart(enabled: bool) -> Result<bool, String> {
     system_tools::set_autostart_enabled(enabled)
 }
 
+#[tauri::command]
+fn start_window_drag(window: tauri::WebviewWindow) {
+    let _ = window.start_dragging();
+}
+
 fn main() {
     let media_mgr = Arc::new(Mutex::new(MediaManager::new()));
     let sys_monitor = Arc::new(Mutex::new(SystemMonitor::new()));
@@ -179,7 +184,8 @@ fn main() {
             get_system_stats,
             get_weather,
             get_autostart,
-            set_autostart
+            set_autostart,
+            start_window_drag
         ])
         .setup(move |app| {
             let app_handle = app.handle().clone();

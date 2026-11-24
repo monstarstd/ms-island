@@ -448,6 +448,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   const handleMouseLeave = () => {
     hoverTimeoutRef.current = window.setTimeout(() => {
       setIsHovered(false);
+      setActiveTab("music");
     }, 250);
   };
 
@@ -565,8 +566,13 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
           /* IDLE BAR: PURE 3-COLUMN GRID (NO CLOCK ICON, NO MODE ICON)*/
           /* ========================================================= */
           <div
+            data-tauri-drag-region
             className="w-full h-full grid grid-cols-[auto_1fr_auto] items-center gap-2.5 select-none"
-            onMouseDown={onStartDrag}
+            onMouseDown={(e) => {
+              if (e.button !== 0) return;
+              if ((e.target as HTMLElement).closest("button")) return;
+              onStartDrag();
+            }}
           >
             {/* Col 1: Pure AM/PM Clock Text (e.g. 02:00 PM) — No Icon */}
             <span
@@ -723,12 +729,16 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
                 </button>
 
                 <div
+                  data-tauri-drag-region
                   className={`h-7 px-2 flex items-center gap-1 rounded-lg border cursor-grab active:cursor-grabbing transition-colors ${
                     isLight
                       ? "bg-zinc-200/80 border-zinc-300 text-zinc-600 hover:text-zinc-950 hover:bg-zinc-300"
                       : "bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-white hover:bg-zinc-800"
                   }`}
-                  onMouseDown={onStartDrag}
+                  onMouseDown={(e) => {
+                    if (e.button !== 0) return;
+                    onStartDrag();
+                  }}
                   title="Drag to move Dynamic Island"
                 >
                   <GripHorizontal className="w-3.5 h-3.5" />
