@@ -37,12 +37,32 @@ import {
   Droplets,
   Wind,
   Thermometer,
-  ArrowUpDown
+  ArrowUpDown,
+  Inbox,
+  FolderOpen,
+  ExternalLink,
+  Battery,
+  BatteryCharging,
+  Monitor,
+  Clipboard,
+  Speaker,
+  X
 } from "lucide-react";
 import { MediaTrack } from "../types/media";
 import { ThemeMode } from "../types/theme";
-import { SystemStats, VisualizerStyle, VolumeInfo, WeatherInfo } from "../types/system";
+import {
+  AudioDeviceInfo,
+  BatteryInfo,
+  ClipboardEntry,
+  IslandToast,
+  ShelfFileInfo,
+  SystemStats,
+  VisualizerStyle,
+  VolumeInfo,
+  WeatherInfo,
+} from "../types/system";
 import { AudioVisualizer } from "./AudioVisualizer";
+import { ScrubBar } from "./ScrubBar";
 
 interface DynamicIslandProps {
   media: MediaTrack;
@@ -57,7 +77,15 @@ interface DynamicIslandProps {
   onStartDrag: () => void;
 }
 
-type TabType = "music" | "clock" | "timer" | "stopwatch" | "weather" | "notes" | "system";
+type TabType =
+  | "music"
+  | "clock"
+  | "timer"
+  | "stopwatch"
+  | "weather"
+  | "notes"
+  | "shelf"
+  | "system";
 
 const TABS: { id: TabType; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { id: "music", label: "Music", icon: Music },
@@ -66,8 +94,35 @@ const TABS: { id: TabType; label: string; icon: React.ComponentType<{ className?
   { id: "stopwatch", label: "Stopwatch", icon: TimerIcon },
   { id: "weather", label: "Weather", icon: CloudSun },
   { id: "notes", label: "Notes", icon: StickyNote },
+  { id: "shelf", label: "Shelf", icon: Inbox },
   { id: "system", label: "System", icon: Cpu },
 ];
+
+/** Plays a soft two-tone harmonic chime via Web Audio API when timer completes */
+function playSoftChime() {
+  try {
+    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioCtx) return;
+    const ctx = new AudioCtx();
+    const now = ctx.currentTime;
+
+    [523.25, 659.25, 783.99].forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(freq, now + idx * 0.14);
+      gain.gain.setValueAtTime(0.0001, now + idx * 0.14);
+      gain.gain.exponentialRampToValueAtTime(0.12, now + idx * 0.14 + 0.03);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + idx * 0.14 + 0.55);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now + idx * 0.14);
+      osc.stop(now + idx * 0.14 + 0.6);
+    });
+  } catch {
+    // Audio playback blocked or unavailable
+  }
+}
 
 export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   media,
@@ -79,7 +134,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   onPrev,
   onSeek,
   onToggleLyricsWindow,
-  onStartDrag
+  onStartDrag,
 }) => {
   const [isHovered, setIsHovered] = useState(false);
   const [activeTab, setActiveTab] = useState<TabType>("music");
@@ -89,8 +144,9 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   const isLight = theme === "light";
 
   // -------------------------------------------------------------
-  // 1. Visualizer Style Preference (Bars / Wave / Dots)
+  // 1. Real WASAPI Audio Spectrum & Visualizer Preference
   // -------------------------------------------------------------
+  const [spectrum, setSpectrum] = useState<number[]>([0, 0, 0, 0, 0, 0, 0, 0]);
   const [visualizerStyle, setVisualizerStyle] = useState<VisualizerStyle>(() => {
     const saved = localStorage.getItem("ms-island-visualizer");
     return saved === "wave" || saved === "dots" || saved === "bars" ? saved : "bars";
@@ -100,6 +156,32 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     setVisualizerStyle(style);
     localStorage.setItem("ms-island-visualizer", style);
   };
+
+  useEffect(() => {
+    if (!isTauri) return;
+    if (!media.isPlaying) {
+      setSpectrum([0, 0, 0, 0, 0, 0, 0, 0]);
+      return;
+    }
+
+    let mounted = true;
+    const id = setInterval(async () => {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        const bands = await invoke<number[]>("get_audio_spectrum");
+        if (mounted && Array.isArray(bands) && bands.length === 8) {
+          setSpectrum(bands);
+        }
+      } catch {
+        // Ignore transient poll errors
+      }
+    }, 55);
+
+    return () => {
+      mounted = false;
+      clearInterval(id);
+    };
+  }, [isTauri, media.isPlaying]);
 
   // -------------------------------------------------------------
   // 2. Real-Time Clock & Calendar State
@@ -115,12 +197,53 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   }, []);
 
   // -------------------------------------------------------------
-  // 3. Master Volume & Scroll Wheel HUD State
+  // 3. Transient Dynamic Toast Pills (CapsLock, Charger, Device)
+  // -------------------------------------------------------------
+  const [toast, setToast] = useState<IslandToast | null>(null);
+  const toastTimeoutRef = useRef<number | null>(null);
+
+  const showToast = (kind: string, message: string, durationMs = 2000) => {
+    setToast({ kind, message });
+    if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+    toastTimeoutRef.current = window.setTimeout(() => {
+      setToast(null);
+    }, durationMs);
+  };
+
+  useEffect(() => {
+    if (!isTauri) return;
+    let unlisten: (() => void) | undefined;
+    import("@tauri-apps/api/event").then(({ listen }) => {
+      listen<IslandToast>("island-toast", (e) => {
+        showToast(e.payload.kind, e.payload.message, 2200);
+      }).then((fn) => {
+        unlisten = fn;
+      });
+    });
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, [isTauri]);
+
+  // -------------------------------------------------------------
+  // 4. Master Volume, Scroll Wheel HUD & Audio Output Switcher
   // -------------------------------------------------------------
   const [volume, setVolume] = useState<VolumeInfo>({ level: 50, muted: false });
   const [showVolumeHud, setShowVolumeHud] = useState<boolean>(false);
   const volumeHudTimeoutRef = useRef<number | null>(null);
   const lastWheelTimeRef = useRef<number>(0);
+  const [audioDevices, setAudioDevices] = useState<AudioDeviceInfo[]>([]);
+
+  const loadAudioDevices = async () => {
+    if (!isTauri) return;
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const list = await invoke<AudioDeviceInfo[]>("get_audio_devices");
+      setAudioDevices(list);
+    } catch (e) {
+      console.error("Failed to list audio devices:", e);
+    }
+  };
 
   useEffect(() => {
     if (!isTauri) return;
@@ -135,6 +258,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
       }
     };
     fetchVol();
+    loadAudioDevices();
     const id = setInterval(fetchVol, 2000);
     return () => {
       mounted = false;
@@ -142,17 +266,35 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     };
   }, [isTauri]);
 
+  useEffect(() => {
+    if (activeTab === "system" && isHovered) {
+      loadAudioDevices();
+    }
+  }, [activeTab, isHovered]);
+
+  const handleSwitchAudioDevice = async (device: AudioDeviceInfo) => {
+    if (!isTauri) return;
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("switch_audio_device", { deviceId: device.id });
+      await loadAudioDevices();
+      showToast("audio", `Output: ${device.name}`, 2000);
+    } catch (e) {
+      console.error("Failed to switch audio device:", e);
+    }
+  };
+
   const triggerVolumeHud = () => {
     setShowVolumeHud(true);
     if (volumeHudTimeoutRef.current) clearTimeout(volumeHudTimeoutRef.current);
     volumeHudTimeoutRef.current = window.setTimeout(() => {
       setShowVolumeHud(false);
-    }, 1800);
+    }, 1700);
   };
 
   const handleSetVolume = async (newLevel: number) => {
     const clamped = Math.max(0, Math.min(100, Math.round(newLevel)));
-    setVolume(prev => ({ level: clamped, muted: clamped === 0 ? prev.muted : false }));
+    setVolume((prev) => ({ level: clamped, muted: clamped === 0 ? prev.muted : false }));
     if (isTauri) {
       try {
         const { invoke } = await import("@tauri-apps/api/core");
@@ -165,7 +307,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   };
 
   const handleToggleMute = async () => {
-    setVolume(prev => ({ ...prev, muted: !prev.muted }));
+    setVolume((prev) => ({ ...prev, muted: !prev.muted }));
     if (isTauri) {
       try {
         const { invoke } = await import("@tauri-apps/api/core");
@@ -178,7 +320,6 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   };
 
   const handleWheelVolume = async (e: React.WheelEvent<HTMLDivElement>) => {
-    // Allow natural scrolling inside textareas or designated scrollable panels
     const target = e.target as HTMLElement | null;
     if (target && (target.tagName === "TEXTAREA" || target.closest(".scrollable-area"))) {
       return;
@@ -200,7 +341,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
         console.error("Failed to adjust volume:", err);
       }
     } else {
-      setVolume(prev => ({
+      setVolume((prev) => ({
         level: Math.max(0, Math.min(100, prev.level + delta)),
         muted: false,
       }));
@@ -208,7 +349,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   };
 
   // -------------------------------------------------------------
-  // 4. Countdown Timer State
+  // 5. Countdown Timer + Soft Synthesized Chime
   // -------------------------------------------------------------
   const [timerDuration, setTimerDuration] = useState<number>(300);
   const [timerRemaining, setTimerRemaining] = useState<number>(300);
@@ -219,10 +360,11 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     let timerId: number | null = null;
     if (isTimerRunning && timerRemaining > 0) {
       timerId = window.setInterval(() => {
-        setTimerRemaining(prev => {
+        setTimerRemaining((prev) => {
           if (prev <= 1) {
             setIsTimerRunning(false);
             setIsTimerFinished(true);
+            playSoftChime();
             return 0;
           }
           return prev - 1;
@@ -258,13 +400,14 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   const handleAdjustTimer = (diff: number) => {
     const newRemaining = Math.max(10, timerRemaining + diff);
     setTimerRemaining(newRemaining);
+    setIsTimerFinished(false);
     if (!isTimerRunning) {
       setTimerDuration(newRemaining);
     }
   };
 
   // -------------------------------------------------------------
-  // 5. Millisecond Stopwatch State
+  // 6. Millisecond Stopwatch State
   // -------------------------------------------------------------
   const [stopwatchTimeMs, setStopwatchTimeMs] = useState<number>(0);
   const [isStopwatchRunning, setIsStopwatchRunning] = useState<boolean>(false);
@@ -306,16 +449,18 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
 
   const handleLapStopwatch = () => {
     if (isStopwatchRunning) {
-      setStopwatchLaps(prev => [stopwatchTimeMs, ...prev]);
+      setStopwatchLaps((prev) => [stopwatchTimeMs, ...prev]);
     }
   };
 
   // -------------------------------------------------------------
-  // 6. Weather & Temperature State
+  // 7. Weather & Temperature State
   // -------------------------------------------------------------
   const [weather, setWeather] = useState<WeatherInfo | null>(null);
   const [weatherCityInput, setWeatherCityInput] = useState<string>("");
-  const [savedWeatherCity, setSavedWeatherCity] = useState<string>(() => localStorage.getItem("ms-island-weather-city") || "");
+  const [savedWeatherCity, setSavedWeatherCity] = useState<string>(
+    () => localStorage.getItem("ms-island-weather-city") || ""
+  );
   const [weatherLoading, setWeatherLoading] = useState<boolean>(false);
   const [weatherError, setWeatherError] = useState<string>("");
 
@@ -331,7 +476,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
       });
       setWeather(data);
     } catch (e: any) {
-      setWeatherError(typeof e === "string" ? e : "Unable to load weather");
+      setWeatherError(typeof e === "string" ? e : "Could not reach weather service");
     } finally {
       setWeatherLoading(false);
     }
@@ -354,10 +499,36 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   };
 
   // -------------------------------------------------------------
-  // 7. Quick Scratchpad / Notes State
+  // 8. Notes Scratchpad & Local Clipboard History
   // -------------------------------------------------------------
+  const [notesMode, setNotesMode] = useState<"scratchpad" | "clipboard">("scratchpad");
   const [notesText, setNotesText] = useState<string>(() => localStorage.getItem("ms-island-notes") || "");
   const [notesCopied, setNotesCopied] = useState<boolean>(false);
+  const [clipboardHistory, setClipboardHistory] = useState<ClipboardEntry[]>([]);
+  const [copiedClipId, setCopiedClipId] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!isTauri) return;
+    let unlisten: (() => void) | undefined;
+
+    import("@tauri-apps/api/core").then(({ invoke }) => {
+      invoke<ClipboardEntry[]>("get_clipboard_history")
+        .then(setClipboardHistory)
+        .catch(() => {});
+    });
+
+    import("@tauri-apps/api/event").then(({ listen }) => {
+      listen<ClipboardEntry[]>("clipboard-updated", (e) => {
+        setClipboardHistory(e.payload);
+      }).then((fn) => {
+        unlisten = fn;
+      });
+    });
+
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, [isTauri]);
 
   const handleNotesChange = (val: string) => {
     setNotesText(val);
@@ -368,11 +539,104 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     if (!notesText) return;
     navigator.clipboard.writeText(notesText);
     setNotesCopied(true);
-    setTimeout(() => setNotesCopied(false), 1800);
+    setTimeout(() => setNotesCopied(false), 1600);
+  };
+
+  const handleCopyClipItem = async (item: ClipboardEntry) => {
+    setCopiedClipId(item.id);
+    setTimeout(() => setCopiedClipId(null), 1400);
+    if (isTauri) {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("copy_clipboard_item", { text: item.text });
+      } catch {
+        navigator.clipboard.writeText(item.text);
+      }
+    } else {
+      navigator.clipboard.writeText(item.text);
+    }
+  };
+
+  const handleClearClipboard = async () => {
+    setClipboardHistory([]);
+    if (isTauri) {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("clear_clipboard_history");
+      } catch {}
+    }
   };
 
   // -------------------------------------------------------------
-  // 8. Hardware Monitor (CPU & RAM) & Windows Auto-Start State
+  // 9. File Drop Shelf (Native Tauri Drag & Drop)
+  // -------------------------------------------------------------
+  const [shelfFiles, setShelfFiles] = useState<ShelfFileInfo[]>(() => {
+    try {
+      const saved = localStorage.getItem("ms-island-shelf");
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [isDragOver, setIsDragOver] = useState<boolean>(false);
+  const [copiedPath, setCopiedPath] = useState<string | null>(null);
+
+  useEffect(() => {
+    localStorage.setItem("ms-island-shelf", JSON.stringify(shelfFiles));
+  }, [shelfFiles]);
+
+  useEffect(() => {
+    if (!isTauri) return;
+    let unlistenDrag: (() => void) | undefined;
+    let unlistenDrop: (() => void) | undefined;
+
+    import("@tauri-apps/api/event").then(({ listen }) => {
+      listen<boolean>("shelf-drag-state", (e) => {
+        setIsDragOver(e.payload);
+      }).then((fn) => {
+        unlistenDrag = fn;
+      });
+
+      listen<ShelfFileInfo[]>("shelf-files-dropped", (e) => {
+        setIsDragOver(false);
+        setShelfFiles((prev) => {
+          const existing = new Set(prev.map((f) => f.path));
+          const uniqueNew = e.payload.filter((f) => !existing.has(f.path));
+          return [...uniqueNew, ...prev].slice(0, 12);
+        });
+        setActiveTab("shelf");
+        setIsHovered(true);
+      }).then((fn) => {
+        unlistenDrop = fn;
+      });
+    });
+
+    return () => {
+      if (unlistenDrag) unlistenDrag();
+      if (unlistenDrop) unlistenDrop();
+    };
+  }, [isTauri]);
+
+  const handleOpenShelfFile = async (path: string) => {
+    if (!isTauri) return;
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("open_shelf_file", { path });
+  };
+
+  const handleRevealShelfFile = async (path: string) => {
+    if (!isTauri) return;
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("reveal_shelf_file", { path });
+  };
+
+  const handleCopyShelfPath = (path: string) => {
+    navigator.clipboard.writeText(path);
+    setCopiedPath(path);
+    setTimeout(() => setCopiedPath(null), 1500);
+  };
+
+  // -------------------------------------------------------------
+  // 10. Hardware Monitor, Battery, Auto-Start & Fullscreen Auto-Hide
   // -------------------------------------------------------------
   const [sysStats, setSysStats] = useState<SystemStats>({
     cpuPercent: 0,
@@ -380,38 +644,54 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     ramUsedGb: 0,
     ramTotalGb: 0,
   });
-  const [cpuHistory, setCpuHistory] = useState<number[]>(Array(14).fill(4));
+  const [battery, setBattery] = useState<BatteryInfo>({
+    hasBattery: false,
+    percent: 100,
+    isCharging: true,
+  });
+  const [cpuHistory, setCpuHistory] = useState<number[]>(Array(14).fill(6));
   const [autostartEnabled, setAutostartEnabled] = useState<boolean>(false);
   const [autostartBusy, setAutostartBusy] = useState<boolean>(false);
+  const [autoHideFullscreen, setAutoHideFullscreen] = useState<boolean>(true);
 
   useEffect(() => {
     if (!isTauri) return;
     let mounted = true;
 
-    const loadAutostart = async () => {
+    const loadInitial = async () => {
       try {
         const { invoke } = await import("@tauri-apps/api/core");
-        const enabled = await invoke<boolean>("get_autostart");
-        if (mounted) setAutostartEnabled(enabled);
+        const [autoStart, autoHide, bat] = await Promise.all([
+          invoke<boolean>("get_autostart"),
+          invoke<boolean>("get_auto_hide_fullscreen"),
+          invoke<BatteryInfo>("get_battery_info"),
+        ]);
+        if (mounted) {
+          setAutostartEnabled(autoStart);
+          setAutoHideFullscreen(autoHide);
+          setBattery(bat);
+        }
       } catch (e) {
-        console.error("Failed to check autostart:", e);
+        console.error("Failed to load system prefs:", e);
       }
     };
 
     const pollStats = async () => {
       try {
         const { invoke } = await import("@tauri-apps/api/core");
-        const stats = await invoke<SystemStats>("get_system_stats");
+        const [stats, bat] = await Promise.all([
+          invoke<SystemStats>("get_system_stats"),
+          invoke<BatteryInfo>("get_battery_info"),
+        ]);
         if (mounted) {
           setSysStats(stats);
-          setCpuHistory(prev => [...prev.slice(1), Math.max(4, stats.cpuPercent)]);
+          setBattery(bat);
+          setCpuHistory((prev) => [...prev.slice(1), Math.max(4, stats.cpuPercent)]);
         }
-      } catch (e) {
-        console.error("Failed to poll system stats:", e);
-      }
+      } catch {}
     };
 
-    loadAutostart();
+    loadInitial();
     pollStats();
     const id = setInterval(pollStats, 1500);
     return () => {
@@ -425,8 +705,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     setAutostartBusy(true);
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      const next = !autostartEnabled;
-      const result = await invoke<boolean>("set_autostart", { enabled: next });
+      const result = await invoke<boolean>("set_autostart", { enabled: !autostartEnabled });
       setAutostartEnabled(result);
     } catch (e) {
       console.error("Failed to toggle autostart:", e);
@@ -435,8 +714,55 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     }
   };
 
+  const handleToggleAutoHideFullscreen = async () => {
+    if (!isTauri) return;
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const result = await invoke<boolean>("set_auto_hide_fullscreen", {
+        enabled: !autoHideFullscreen,
+      });
+      setAutoHideFullscreen(result);
+    } catch (e) {
+      console.error("Failed to toggle auto-hide fullscreen:", e);
+    }
+  };
+
   // -------------------------------------------------------------
-  // Hover Handlers strictly bound to inner pill/card container
+  // Keyboard Accessibility (1-8 tabs, Space play/pause, Esc collapse)
+  // -------------------------------------------------------------
+  useEffect(() => {
+    if (!isHovered) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") {
+        if (e.key === "Escape") {
+          (e.target as HTMLElement).blur();
+        }
+        return;
+      }
+
+      if (e.key === "Escape") {
+        setIsHovered(false);
+        setActiveTab("music");
+        return;
+      }
+      if (e.key === " " && activeTab === "music") {
+        e.preventDefault();
+        onTogglePlayPause();
+        return;
+      }
+      const num = Number(e.key);
+      if (num >= 1 && num <= TABS.length) {
+        setActiveTab(TABS[num - 1].id);
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isHovered, activeTab, onTogglePlayPause]);
+
+  // -------------------------------------------------------------
+  // Hover Handlers strictly bound to inner physical notch
   // -------------------------------------------------------------
   const handleMouseEnter = () => {
     if (hoverTimeoutRef.current) {
@@ -459,7 +785,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     hoverTimeoutRef.current = window.setTimeout(() => {
       setIsHovered(false);
       setActiveTab("music");
-    }, 250);
+    }, 260);
   };
 
   // -------------------------------------------------------------
@@ -495,6 +821,13 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     return `${mins < 10 ? "0" : ""}${mins}:${secs < 10 ? "0" : ""}${secs}.${centis < 10 ? "0" : ""}${centis}`;
   };
 
+  const formatBytes = (bytes: number) => {
+    if (bytes === 0) return "Folder";
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
   const renderWeatherIcon = (icon: string, className = "w-4 h-4") => {
     switch (icon) {
       case "sun":
@@ -522,90 +855,108 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     return <Volume2 className={className} />;
   };
 
-  const progressPercent = media.durationSec > 0
-    ? Math.min(100, Math.max(0, (media.positionSec / media.durationSec) * 100))
-    : 0;
-
   // Calendar calculations
-  const displayCalendarDate = new Date(currentTime.getFullYear(), currentTime.getMonth() + calendarMonthOffset, 1);
-  const currentMonthName = displayCalendarDate.toLocaleDateString("en-US", { month: "long", year: "numeric" });
-  const daysInMonth = new Date(displayCalendarDate.getFullYear(), displayCalendarDate.getMonth() + 1, 0).getDate();
-  const firstDayWeekday = new Date(displayCalendarDate.getFullYear(), displayCalendarDate.getMonth(), 1).getDay();
+  const displayCalendarDate = new Date(
+    currentTime.getFullYear(),
+    currentTime.getMonth() + calendarMonthOffset,
+    1
+  );
+  const currentMonthName = displayCalendarDate.toLocaleDateString("en-US", {
+    month: "long",
+    year: "numeric",
+  });
+  const daysInMonth = new Date(
+    displayCalendarDate.getFullYear(),
+    displayCalendarDate.getMonth() + 1,
+    0
+  ).getDate();
+  const firstDayWeekday = new Date(
+    displayCalendarDate.getFullYear(),
+    displayCalendarDate.getMonth(),
+    1
+  ).getDay();
   const isCurrentViewingMonth = calendarMonthOffset === 0;
 
   const idleClockAmPm = formatAmPmTime(currentTime, false);
   const fullClockAmPm = formatAmPmTime(currentTime, true);
   const wordCount = notesText.trim() ? notesText.trim().split(/\s+/).length : 0;
 
-  // Theme token helpers for crisp grid cards
-  const cardCls = isLight
+  // Crafted matte hardware palette tokens (WCAG AA compliant in both themes)
+  const shellSurface = isLight
+    ? "bg-[#f5f5f3] border-zinc-300 text-zinc-900 shadow-lg shadow-black/10"
+    : "bg-[#0c0c0e] border-zinc-800 text-zinc-100 shadow-2xl shadow-black/80";
+
+  const surfaceSubtle = isLight
     ? "bg-white border border-zinc-200/90 rounded-xl"
-    : "bg-zinc-900/80 border border-zinc-800 rounded-xl";
+    : "bg-[#141418] border border-zinc-800/90 rounded-xl";
+
+  const mutedText = isLight ? "text-zinc-600" : "text-zinc-400";
+
   const subtleBtnCls = isLight
-    ? "bg-zinc-200/80 border-zinc-300 text-zinc-700 hover:bg-zinc-300 hover:text-zinc-950"
-    : "bg-zinc-800 border-zinc-700 text-zinc-300 hover:bg-zinc-700 hover:text-white";
+    ? "bg-zinc-200/80 border-zinc-300 text-zinc-800 hover:bg-zinc-300 active:scale-[0.97]"
+    : "bg-zinc-800/80 border-zinc-700/80 text-zinc-200 hover:bg-zinc-700 active:scale-[0.97]";
+
   const primaryBtnCls = isLight
-    ? "bg-zinc-900 text-white hover:bg-zinc-800"
-    : "bg-white text-black hover:bg-zinc-200";
+    ? "bg-zinc-900 text-white hover:bg-zinc-800 active:scale-[0.97]"
+    : "bg-zinc-100 text-zinc-950 hover:bg-white active:scale-[0.97]";
+
+  const focusRing = "focus:outline-none focus-visible:ring-1 focus-visible:ring-[#f97316]";
 
   return (
     <div className="w-full flex justify-center items-start pt-0">
       {/*
-        FLAT SEAMLESS DYNAMIC ISLAND CONTAINER
-        - Hover listeners strictly on this physical element (never the outer transparent window).
-        - Scroll wheel adjusts system volume smoothly.
+        FLAT SEAMLESS DYNAMIC ISLAND SHELL
+        - Organic spring curve transition (island-shell-spring)
+        - Hover listeners strictly on this physical element
+        - Scroll wheel controls system volume natively
       */}
       <div
         onMouseEnter={handleMouseEnter}
         onMouseLeave={handleMouseLeave}
         onWheel={handleWheelVolume}
-        className={`transition-all duration-200 ease-out overflow-hidden border ${
-          isLight
-            ? "bg-zinc-100/95 border-zinc-300 text-zinc-900 shadow-xl shadow-zinc-400/25"
-            : "bg-zinc-950 border-zinc-800 text-white shadow-2xl shadow-black/90"
+        className={`island-shell-spring overflow-hidden border ${shellSurface} ${
+          isDragOver ? "border-[#f97316] ring-1 ring-[#f97316]" : ""
         } ${
           isHovered
-            ? "w-[490px] h-[244px] rounded-2xl p-3.5"
-            : "w-[420px] h-[36px] rounded-b-xl rounded-t-none border-t-0 px-3.5 py-1.5 cursor-pointer"
-        } ${
-          !isHovered && (isLight ? "hover:bg-zinc-200/90" : "hover:bg-zinc-900/95")
+            ? "w-[516px] h-[256px] rounded-[20px] p-3.5"
+            : "w-[430px] h-[36px] rounded-b-[16px] rounded-t-none border-t-0 px-3.5 py-1.5 cursor-pointer"
         }`}
       >
         {!isHovered ? (
           /* ========================================================= */
-          /* IDLE BAR: PURE 3-COLUMN GRID (NO CLOCK ICON, NO MODE ICON)*/
+          /* IDLE BAR: 3-COL GRID (PURE AM/PM TIME, NO CLOCK/MODE ICON)*/
           /* ========================================================= */
           <div
-            className="w-full h-full grid grid-cols-[auto_1fr_auto] items-center gap-2.5 select-none"
+            className="w-full h-full grid grid-cols-[auto_1fr_auto] items-center gap-2.5 select-none island-content-enter"
             onMouseDown={(e) => {
               if (e.button !== 0) return;
               if ((e.target as HTMLElement).closest("button")) return;
               onStartDrag();
             }}
           >
-            {/* Col 1: Pure AM/PM Clock Text (e.g. 02:00 PM) — No Icon */}
-            <span
-              className={`text-[11px] font-semibold tabular-nums tracking-tight whitespace-nowrap ${
-                isLight ? "text-zinc-900" : "text-white"
-              }`}
-            >
+            {/* Col 1: Pure 12-hour AM/PM clock (e.g. 02:00 PM) */}
+            <span className="text-[11px] font-semibold tabular-nums tracking-tight whitespace-nowrap">
               {idleClockAmPm}
             </span>
 
-            {/* Col 2: Context-Aware Center Slot */}
+            {/* Col 2: Context-Aware Live Slot */}
             <div
               className={`min-w-0 pl-2.5 border-l flex items-center gap-2 ${
                 isLight ? "border-zinc-300" : "border-zinc-800"
               }`}
             >
-              {showVolumeHud ? (
-                /* Instant Volume Scroll HUD */
+              {isDragOver ? (
+                <div className="flex items-center gap-1.5 text-[11px] font-medium text-[#f97316]">
+                  <Inbox className="w-3.5 h-3.5 flex-shrink-0" />
+                  <span className="truncate">Drop files to save on Shelf</span>
+                </div>
+              ) : showVolumeHud ? (
                 <div className="w-full grid grid-cols-[auto_1fr_auto] items-center gap-2">
-                  {renderVolumeIcon(`w-3.5 h-3.5 ${isLight ? "text-zinc-700" : "text-zinc-300"}`)}
+                  {renderVolumeIcon(`w-3.5 h-3.5 ${mutedText}`)}
                   <div className={`h-1.5 rounded-full overflow-hidden ${isLight ? "bg-zinc-300" : "bg-zinc-800"}`}>
                     <div
                       className={`h-full rounded-full transition-all duration-75 ${
-                        volume.muted ? "bg-zinc-500" : isLight ? "bg-zinc-900" : "bg-white"
+                        volume.muted ? "bg-zinc-500" : "bg-[#f97316]"
                       }`}
                       style={{ width: `${volume.muted ? 0 : volume.level}%` }}
                     />
@@ -614,66 +965,76 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
                     {volume.muted ? "Mute" : `${volume.level}%`}
                   </span>
                 </div>
+              ) : toast ? (
+                <div className="flex items-center gap-1.5 text-[11px] font-medium truncate">
+                  <span className="w-1.5 h-1.5 rounded-full bg-[#f97316] flex-shrink-0" />
+                  <span className="truncate">{toast.message}</span>
+                </div>
               ) : isTimerRunning || isTimerFinished ? (
-                /* Active Timer Badge */
                 <div className="flex items-center gap-1.5 min-w-0 truncate">
                   <Hourglass
                     className={`w-3.5 h-3.5 flex-shrink-0 ${
-                      isTimerFinished ? "text-amber-500 animate-bounce" : isLight ? "text-zinc-700" : "text-zinc-300"
+                      isTimerFinished ? "text-[#f97316]" : mutedText
                     }`}
                   />
                   <span
                     className={`text-[11px] font-mono tabular-nums font-medium truncate ${
-                      isTimerFinished ? "text-amber-500 font-bold" : isLight ? "text-zinc-900" : "text-white"
+                      isTimerFinished ? "text-[#f97316] font-semibold" : ""
                     }`}
                   >
-                    {isTimerFinished ? "Time's Up!" : formatTime(timerRemaining)}
+                    {isTimerFinished ? "Timer Finished" : formatTime(timerRemaining)}
                   </span>
                 </div>
               ) : isStopwatchRunning ? (
-                /* Active Stopwatch Badge */
                 <div className="flex items-center gap-1.5 min-w-0 truncate">
-                  <TimerIcon className={`w-3.5 h-3.5 flex-shrink-0 ${isLight ? "text-zinc-700" : "text-zinc-300"}`} />
+                  <TimerIcon className={`w-3.5 h-3.5 flex-shrink-0 ${mutedText}`} />
                   <span className="text-[11px] font-mono tabular-nums font-medium truncate">
                     {formatStopwatch(stopwatchTimeMs)}
                   </span>
                 </div>
               ) : media.isPlaying ? (
-                /* Music Playing: Selected Audio Visualizer + Track Title */
                 <div className="flex items-center gap-2 min-w-0 w-full">
-                  <AudioVisualizer isPlaying={media.isPlaying} style={visualizerStyle} isLight={isLight} compact />
-                  <span className={`text-[11px] font-medium truncate ${isLight ? "text-zinc-900" : "text-white"}`}>
+                  <AudioVisualizer
+                    isPlaying={media.isPlaying}
+                    style={visualizerStyle}
+                    isLight={isLight}
+                    spectrum={spectrum}
+                    compact
+                  />
+                  <span className="text-[11px] font-medium truncate">
                     {media.title || "Playing Audio"}
                   </span>
                 </div>
               ) : weather ? (
-                /* Idle with Weather Pill */
                 <div className="flex items-center gap-1.5 min-w-0 truncate text-[11px]">
-                  {renderWeatherIcon(weather.icon, `w-3.5 h-3.5 flex-shrink-0 ${isLight ? "text-zinc-700" : "text-zinc-300"}`)}
+                  {renderWeatherIcon(weather.icon, `w-3.5 h-3.5 flex-shrink-0 ${mutedText}`)}
                   <span className="font-semibold tabular-nums">{weather.temperature}°C</span>
-                  <span className={`truncate text-[10px] ${isLight ? "text-zinc-500" : "text-zinc-400"}`}>
-                    {weather.city} • {weather.condition}
+                  <span className={`truncate text-[11px] ${mutedText}`}>
+                    {weather.city} · {weather.condition}
                   </span>
                 </div>
               ) : (
-                /* Idle Date Fallback */
-                <span className={`text-[11px] truncate ${isLight ? "text-zinc-600" : "text-zinc-400"}`}>
-                  {currentTime.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}
+                <span className={`text-[11px] truncate ${mutedText}`}>
+                  {currentTime.toLocaleDateString("en-US", {
+                    weekday: "short",
+                    month: "short",
+                    day: "numeric",
+                  })}
                 </span>
               )}
             </div>
 
-            {/* Col 3: Clean Lyrics Toggle Button ONLY (No Mode Icon) */}
+            {/* Col 3: Clean Lyrics Button ONLY */}
             <button
               onClick={(e) => {
                 e.stopPropagation();
                 onToggleLyricsWindow();
               }}
-              className={`px-2 py-0.5 rounded text-[10px] font-medium flex items-center gap-1 transition-colors border ${
+              className={`px-2 py-0.5 rounded-md text-[10px] font-medium flex items-center gap-1 transition-all border ${focusRing} ${
                 isLyricsOpen
                   ? isLight
                     ? "bg-zinc-900 text-white border-zinc-900"
-                    : "bg-white text-black border-white"
+                    : "bg-zinc-100 text-zinc-950 border-zinc-100"
                   : subtleBtnCls
               }`}
               title="Toggle Full Lyrics Window"
@@ -684,53 +1045,59 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
           </div>
         ) : (
           /* ========================================================= */
-          /* EXPANDED MULTI-WIDGET HUB (STRICT GRID ARCHITECTURE)      */
+          /* EXPANDED COMMAND CENTER (GRID + CROSSFADE CHOREOGRAPHY)   */
           /* ========================================================= */
-          <div className="w-full h-full grid grid-rows-[auto_1fr] gap-2.5 select-none">
+          <div className="w-full h-full grid grid-rows-[auto_1fr] gap-2.5 select-none island-content-enter">
             {/* ROW 1: NAVIGATION BAR */}
             <div
               className={`grid grid-cols-[1fr_auto] items-center gap-2 pb-2 border-b ${
-                isLight ? "border-zinc-200" : "border-zinc-800"
+                isLight ? "border-zinc-200" : "border-zinc-800/90"
               }`}
             >
-              {/* Expanding Pill Tab Bar */}
+              {/* 8-Tab Expanding Pill Bar */}
               <div
                 className={`flex items-center gap-0.5 p-0.5 rounded-lg border w-fit ${
-                  isLight ? "bg-zinc-200/80 border-zinc-300" : "bg-zinc-900 border-zinc-800"
+                  isLight ? "bg-zinc-200/75 border-zinc-300/80" : "bg-[#141418] border-zinc-800"
                 }`}
               >
-                {TABS.map(({ id, label, icon: Icon }) => {
+                {TABS.map(({ id, label, icon: Icon }, idx) => {
                   const isActive = activeTab === id;
+                  const hasBadge =
+                    (id === "shelf" && shelfFiles.length > 0) ||
+                    (id === "timer" && (isTimerRunning || isTimerFinished));
                   return (
                     <button
                       key={id}
                       onClick={() => setActiveTab(id)}
-                      title={label}
-                      className={`h-6 flex items-center justify-center gap-1.5 rounded-md text-[10px] transition-all ${
+                      title={`${label} (Key ${idx + 1})`}
+                      className={`relative h-6 flex items-center justify-center gap-1.5 rounded-md text-[10px] transition-all ${focusRing} active:scale-[0.96] ${
                         isActive
                           ? isLight
-                            ? "px-2.5 bg-white text-zinc-900 shadow-sm font-semibold"
-                            : "px-2.5 bg-zinc-800 text-white shadow-sm font-semibold"
+                            ? "px-2.5 bg-white text-zinc-950 shadow-sm font-semibold"
+                            : "px-2.5 bg-zinc-800 text-white font-semibold"
                           : isLight
-                            ? "w-7 text-zinc-600 hover:text-zinc-900 hover:bg-zinc-200"
-                            : "w-7 text-zinc-400 hover:text-white hover:bg-zinc-800/60"
+                            ? "w-7 text-zinc-600 hover:text-zinc-950 hover:bg-zinc-200"
+                            : "w-7 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/60"
                       }`}
                     >
                       <Icon className="w-3.5 h-3.5 flex-shrink-0" />
                       {isActive && <span className="whitespace-nowrap">{label}</span>}
+                      {!isActive && hasBadge && (
+                        <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-[#f97316]" />
+                      )}
                     </button>
                   );
                 })}
               </div>
 
-              {/* Right Utility Controls: Theme Mode Toggle & Drag Grip */}
+              {/* Right Utility Controls: Theme Toggle & Drag Grip */}
               <div className="flex items-center gap-1.5">
                 <button
                   onClick={onToggleTheme}
-                  className={`h-7 w-7 flex items-center justify-center rounded-lg border transition-colors ${
+                  className={`h-7 w-7 flex items-center justify-center rounded-lg border transition-all ${focusRing} ${
                     isLight
-                      ? "bg-zinc-200/80 border-zinc-300 text-zinc-700 hover:text-zinc-950 hover:bg-zinc-300"
-                      : "bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-white hover:bg-zinc-800"
+                      ? "bg-zinc-200/80 border-zinc-300 text-zinc-800 hover:bg-zinc-300 active:scale-[0.95]"
+                      : "bg-[#141418] border-zinc-800 text-zinc-300 hover:text-white hover:bg-zinc-800 active:scale-[0.95]"
                   }`}
                   title={isLight ? "Switch to Dark Mode" : "Switch to Light Mode"}
                 >
@@ -738,11 +1105,10 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
                 </button>
 
                 <div
-                  data-tauri-drag-region
                   className={`h-7 px-2 flex items-center gap-1 rounded-lg border cursor-grab active:cursor-grabbing transition-colors ${
                     isLight
-                      ? "bg-zinc-200/80 border-zinc-300 text-zinc-600 hover:text-zinc-950 hover:bg-zinc-300"
-                      : "bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-white hover:bg-zinc-800"
+                      ? "bg-zinc-200/80 border-zinc-300 text-zinc-700 hover:bg-zinc-300"
+                      : "bg-[#141418] border-zinc-800 text-zinc-300 hover:text-white hover:bg-zinc-800"
                   }`}
                   onMouseDown={(e) => {
                     if (e.button !== 0) return;
@@ -756,45 +1122,52 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
               </div>
             </div>
 
-            {/* ROW 2: CONTENT GRID AREA */}
-            <div className="min-h-0 h-full overflow-hidden">
+            {/* ROW 2: CONTENT AREA */}
+            <div key={activeTab} className="min-h-0 h-full overflow-hidden island-content-enter">
               {/* ===================================================== */}
-              {/* TAB 1: MUSIC PLAYER + VISUALIZER STYLES + VOLUME      */}
+              {/* TAB 1: MUSIC PLAYER (REAL ART + REAL WASAPI + SCRUB)  */}
               {/* ===================================================== */}
               {activeTab === "music" && (
-                <div className="w-full h-full grid grid-rows-[auto_auto_1fr] gap-2.5">
-                  {/* Track Header Grid */}
-                  <div className="grid grid-cols-[44px_1fr_auto] items-center gap-3">
+                <div className="w-full h-full grid grid-rows-[1fr_auto_auto] gap-2">
+                  {/* Top: Track Artwork & Details */}
+                  <div className="grid grid-cols-[52px_1fr_auto] items-center gap-3.5">
                     <div
-                      className={`w-11 h-11 rounded-xl overflow-hidden border flex items-center justify-center ${
-                        isLight ? "bg-zinc-200 border-zinc-300" : "bg-zinc-900 border-zinc-800"
+                      className={`w-[52px] h-[52px] rounded-xl overflow-hidden border flex items-center justify-center ${
+                        isLight ? "bg-zinc-200 border-zinc-300" : "bg-[#16161b] border-zinc-800"
                       }`}
                     >
                       {media.thumbnail ? (
-                        <img src={media.thumbnail} alt="Cover" className="w-full h-full object-cover" />
+                        <img src={media.thumbnail} alt="Album cover" className="w-full h-full object-cover" />
                       ) : (
-                        <Music className={`w-5 h-5 ${isLight ? "text-zinc-500" : "text-zinc-600"}`} />
+                        <Music className={`w-5 h-5 ${mutedText}`} />
                       )}
                     </div>
 
                     <div className="min-w-0">
-                      <h4 className="text-xs font-semibold truncate" title={media.title}>
+                      <h4 className="text-[13px] font-semibold truncate leading-snug" title={media.title}>
                         {media.title || "No media playing"}
                       </h4>
-                      <p className={`text-[10px] truncate mt-0.5 ${isLight ? "text-zinc-500" : "text-zinc-400"}`} title={media.artist}>
-                        {media.artist || "Play audio in YouTube, Spotify, or browser"}
+                      <p className={`text-[11px] truncate mt-0.5 ${mutedText}`} title={media.artist}>
+                        {media.title
+                          ? media.artist || media.sourceApp || "Media Player"
+                          : "Start playback in YouTube, Spotify, or browser"}
                       </p>
                     </div>
 
                     <div className="flex items-center gap-2.5">
-                      <AudioVisualizer isPlaying={media.isPlaying} style={visualizerStyle} isLight={isLight} />
+                      <AudioVisualizer
+                        isPlaying={media.isPlaying}
+                        style={visualizerStyle}
+                        isLight={isLight}
+                        spectrum={spectrum}
+                      />
                       <button
                         onClick={onToggleLyricsWindow}
-                        className={`h-7 px-2.5 rounded-lg text-[10px] font-medium flex items-center gap-1 transition-colors border ${
+                        className={`h-7 px-2.5 rounded-lg text-[10px] font-medium flex items-center gap-1.5 transition-all border ${focusRing} ${
                           isLyricsOpen
                             ? isLight
                               ? "bg-zinc-900 text-white border-zinc-900"
-                              : "bg-white text-black border-white"
+                              : "bg-zinc-100 text-zinc-950 border-zinc-100"
                             : subtleBtnCls
                         }`}
                         title="Toggle Full Lyrics Window"
@@ -805,121 +1178,114 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
                     </div>
                   </div>
 
-                  {/* Seekbar */}
-                  <div className="flex flex-col gap-1">
-                    <div
-                      className={`relative w-full h-1.5 rounded-full cursor-pointer transition-all ${
-                        isLight ? "bg-zinc-300" : "bg-zinc-800"
-                      }`}
-                      onClick={(e) => {
-                        const rect = e.currentTarget.getBoundingClientRect();
-                        const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-                        onSeek(ratio * media.durationSec);
-                      }}
-                    >
-                      <div
-                        className={`h-full rounded-full ${isLight ? "bg-zinc-900" : "bg-white"}`}
-                        style={{ width: `${progressPercent}%` }}
-                      />
-                    </div>
-                    <div className="flex justify-between text-[9px] font-mono tabular-nums text-zinc-500">
+                  {/* Middle: Custom Tactile Seekbar */}
+                  <div className="flex flex-col gap-0.5">
+                    <ScrubBar
+                      value={media.positionSec}
+                      max={media.durationSec}
+                      onChange={onSeek}
+                      isLight={isLight}
+                      accent={media.isPlaying}
+                      disabled={!media.title || media.durationSec <= 0}
+                      formatTooltip={formatTime}
+                      ariaLabel="Playback position"
+                    />
+                    <div className={`flex justify-between text-[10px] font-mono tabular-nums ${mutedText}`}>
                       <span>{formatTime(media.positionSec)}</span>
                       <span>{formatTime(media.durationSec)}</span>
                     </div>
                   </div>
 
-                  {/* Bottom 12-Col Control Grid: Visualizer Style | Playback | Volume */}
-                  <div className="grid grid-cols-12 items-center gap-2 self-end pb-0.5">
-                    {/* Left (4 cols): Visualizer Style Switcher */}
+                  {/* Bottom 12-Col Grid: Visualizer Switcher | Transport | Volume ScrubBar */}
+                  <div className="grid grid-cols-12 items-center gap-2 pt-0.5">
                     <div
-                      className={`col-span-4 grid grid-cols-3 p-0.5 rounded-lg border text-[9px] font-medium ${
-                        isLight ? "bg-zinc-200/80 border-zinc-300" : "bg-zinc-900 border-zinc-800"
+                      className={`col-span-4 grid grid-cols-3 p-0.5 rounded-lg border text-[10px] font-medium ${
+                        isLight ? "bg-zinc-200/80 border-zinc-300" : "bg-[#141418] border-zinc-800"
                       }`}
                     >
                       {(["bars", "wave", "dots"] as VisualizerStyle[]).map((style) => (
                         <button
                           key={style}
                           onClick={() => handleSetVisualizer(style)}
-                          className={`py-1 rounded capitalize transition-colors ${
+                          className={`py-1 rounded-md capitalize transition-all ${focusRing} ${
                             visualizerStyle === style
                               ? isLight
-                                ? "bg-white text-zinc-900 font-semibold shadow-sm"
+                                ? "bg-white text-zinc-950 font-semibold shadow-sm"
                                 : "bg-zinc-800 text-white font-semibold"
                               : isLight
-                                ? "text-zinc-600 hover:text-zinc-900"
+                                ? "text-zinc-600 hover:text-zinc-950"
                                 : "text-zinc-400 hover:text-white"
                           }`}
-                          title={`Visualizer style: ${style}`}
                         >
                           {style}
                         </button>
                       ))}
                     </div>
 
-                    {/* Center (4 cols): Playback Transport */}
                     <div className="col-span-4 flex items-center justify-center gap-1.5">
                       <button
                         onClick={onPrev}
-                        className={`p-1 transition-colors ${isLight ? "text-zinc-600 hover:text-zinc-950" : "text-zinc-400 hover:text-white"}`}
+                        className={`p-1.5 rounded-md transition-all active:scale-[0.92] ${focusRing} ${
+                          isLight ? "text-zinc-700 hover:bg-zinc-200" : "text-zinc-300 hover:bg-zinc-800"
+                        }`}
                         title="Previous Track"
                       >
                         <SkipBack className="w-3.5 h-3.5" />
                       </button>
                       <button
                         onClick={() => onSeek(Math.max(0, media.positionSec - 10))}
-                        className={`p-1 transition-colors ${isLight ? "text-zinc-500 hover:text-zinc-950" : "text-zinc-500 hover:text-white"}`}
+                        className={`p-1.5 rounded-md transition-all active:scale-[0.92] ${focusRing} ${mutedText} hover:text-current`}
                         title="Rewind 10s"
                       >
                         <RotateCcw className="w-3 h-3" />
                       </button>
                       <button
                         onClick={onTogglePlayPause}
-                        className={`w-8 h-8 flex items-center justify-center rounded-full transition-colors ${primaryBtnCls}`}
-                        title={media.isPlaying ? "Pause" : "Play"}
+                        className={`w-8 h-8 flex items-center justify-center rounded-full transition-all ${focusRing} ${primaryBtnCls}`}
+                        title={media.isPlaying ? "Pause (Space)" : "Play (Space)"}
                       >
                         {media.isPlaying ? (
-                          <Pause className={`w-3.5 h-3.5 ${isLight ? "fill-white" : "fill-black"}`} />
+                          <Pause className={`w-3.5 h-3.5 ${isLight ? "fill-white" : "fill-zinc-950"}`} />
                         ) : (
-                          <Play className={`w-3.5 h-3.5 translate-x-[0.5px] ${isLight ? "fill-white" : "fill-black"}`} />
+                          <Play className={`w-3.5 h-3.5 translate-x-[0.5px] ${isLight ? "fill-white" : "fill-zinc-950"}`} />
                         )}
                       </button>
                       <button
                         onClick={() => onSeek(Math.min(media.durationSec, media.positionSec + 10))}
-                        className={`p-1 transition-colors ${isLight ? "text-zinc-500 hover:text-zinc-950" : "text-zinc-500 hover:text-white"}`}
+                        className={`p-1.5 rounded-md transition-all active:scale-[0.92] ${focusRing} ${mutedText} hover:text-current`}
                         title="Forward 10s"
                       >
                         <RotateCw className="w-3 h-3" />
                       </button>
                       <button
                         onClick={onNext}
-                        className={`p-1 transition-colors ${isLight ? "text-zinc-600 hover:text-zinc-950" : "text-zinc-400 hover:text-white"}`}
+                        className={`p-1.5 rounded-md transition-all active:scale-[0.92] ${focusRing} ${
+                          isLight ? "text-zinc-700 hover:bg-zinc-200" : "text-zinc-300 hover:bg-zinc-800"
+                        }`}
                         title="Next Track"
                       >
                         <SkipForward className="w-3.5 h-3.5" />
                       </button>
                     </div>
 
-                    {/* Right (4 cols): Master Volume Control */}
                     <div className="col-span-4 grid grid-cols-[auto_1fr_auto] items-center gap-1.5 pl-1">
                       <button
                         onClick={handleToggleMute}
-                        className={`p-1 rounded transition-colors ${isLight ? "text-zinc-700 hover:bg-zinc-200" : "text-zinc-300 hover:bg-zinc-800"}`}
+                        className={`p-1 rounded-md transition-colors ${focusRing} ${
+                          isLight ? "text-zinc-700 hover:bg-zinc-200" : "text-zinc-300 hover:bg-zinc-800"
+                        }`}
                         title={volume.muted ? "Unmute" : "Mute"}
                       >
                         {renderVolumeIcon("w-3.5 h-3.5")}
                       </button>
-                      <input
-                        type="range"
-                        min={0}
-                        max={100}
+                      <ScrubBar
                         value={volume.muted ? 0 : volume.level}
-                        onChange={(e) => handleSetVolume(Number(e.target.value))}
-                        className={`w-full h-1 rounded-lg appearance-none cursor-pointer ${
-                          isLight ? "bg-zinc-300 accent-zinc-900" : "bg-zinc-700 accent-white"
-                        }`}
-                        title="Master Volume (or scroll on island)"
+                        max={100}
+                        onChange={handleSetVolume}
+                        isLight={isLight}
+                        ariaLabel="Master volume"
                       />
-                      <span className="text-[9px] font-mono tabular-nums text-zinc-500 w-7 text-right">
+                      <span className={`text-[10px] font-mono tabular-nums w-7 text-right ${mutedText}`}>
                         {volume.muted ? "0%" : `${volume.level}%`}
                       </span>
                     </div>
@@ -928,58 +1294,62 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
               )}
 
               {/* ===================================================== */}
-              {/* TAB 2: CLOCK & CALENDAR (12-COL GRID)                 */}
+              {/* TAB 2: CLOCK & CALENDAR (OPEN HERO + CLEAN CALENDAR)  */}
               {/* ===================================================== */}
               {activeTab === "clock" && (
-                <div className="w-full h-full grid grid-cols-12 gap-3 items-stretch">
-                  {/* Left (5 cols): AM/PM Digital Clock & Info */}
-                  <div className={`col-span-5 p-3 flex flex-col justify-between ${cardCls}`}>
+                <div className="w-full h-full grid grid-cols-12 gap-4 items-stretch">
+                  {/* Left (5 cols): Open typographic clock — no redundant box */}
+                  <div className="col-span-5 py-1.5 px-1 flex flex-col justify-between">
                     <div>
-                      <div className="text-[10px] uppercase tracking-wider text-zinc-500 font-medium">Local Time</div>
-                      <div className="text-xl font-mono font-bold tabular-nums tracking-tight mt-1 leading-none">
+                      <div className={`text-[10px] font-medium ${mutedText}`}>Local Time</div>
+                      <div className="text-[22px] font-mono font-bold tabular-nums tracking-tight mt-1 leading-none">
                         {fullClockAmPm}
                       </div>
                     </div>
 
-                    <div className="space-y-1">
-                      <div className={`text-[11px] font-medium ${isLight ? "text-zinc-800" : "text-zinc-200"}`}>
+                    <div className="space-y-0.5">
+                      <div className="text-xs font-semibold">
                         {currentTime.toLocaleDateString("en-US", { weekday: "long" })}
                       </div>
-                      <div className="text-[10px] text-zinc-500">
-                        {currentTime.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}
+                      <div className={`text-[11px] ${mutedText}`}>
+                        {currentTime.toLocaleDateString("en-US", {
+                          month: "long",
+                          day: "numeric",
+                          year: "numeric",
+                        })}
                       </div>
                     </div>
 
-                    <div className={`pt-2 border-t text-[9px] text-zinc-500 truncate ${isLight ? "border-zinc-200" : "border-zinc-800"}`}>
+                    <div className={`pt-2 border-t text-[10px] truncate ${isLight ? "border-zinc-200 text-zinc-600" : "border-zinc-800 text-zinc-400"}`}>
                       {Intl.DateTimeFormat().resolvedOptions().timeZone}
                     </div>
                   </div>
 
-                  {/* Right (7 cols): Mini Monthly Calendar */}
-                  <div className={`col-span-7 p-2.5 flex flex-col justify-between ${cardCls}`}>
-                    <div className="grid grid-cols-[auto_1fr_auto] items-center text-[10px] font-semibold mb-1">
+                  {/* Right (7 cols): Interactive Monthly Calendar */}
+                  <div className={`col-span-7 p-2.5 flex flex-col justify-between ${surfaceSubtle}`}>
+                    <div className="grid grid-cols-[auto_1fr_auto] items-center text-[11px] font-semibold mb-1">
                       <button
-                        onClick={() => setCalendarMonthOffset(prev => prev - 1)}
-                        className={`p-0.5 rounded ${isLight ? "text-zinc-600 hover:bg-zinc-100" : "text-zinc-400 hover:bg-zinc-800"}`}
+                        onClick={() => setCalendarMonthOffset((prev) => prev - 1)}
+                        className={`p-1 rounded-md ${focusRing} ${isLight ? "text-zinc-700 hover:bg-zinc-100" : "text-zinc-300 hover:bg-zinc-800"}`}
                         title="Previous Month"
                       >
                         <ChevronLeft className="w-3.5 h-3.5" />
                       </button>
                       <span className="text-center">{currentMonthName}</span>
                       <button
-                        onClick={() => setCalendarMonthOffset(prev => prev + 1)}
-                        className={`p-0.5 rounded ${isLight ? "text-zinc-600 hover:bg-zinc-100" : "text-zinc-400 hover:bg-zinc-800"}`}
+                        onClick={() => setCalendarMonthOffset((prev) => prev + 1)}
+                        className={`p-1 rounded-md ${focusRing} ${isLight ? "text-zinc-700 hover:bg-zinc-100" : "text-zinc-300 hover:bg-zinc-800"}`}
                         title="Next Month"
                       >
                         <ChevronRight className="w-3.5 h-3.5" />
                       </button>
                     </div>
 
-                    <div className="grid grid-cols-7 text-center text-[9px] font-medium text-zinc-500 mb-0.5">
+                    <div className={`grid grid-cols-7 text-center text-[10px] font-medium mb-0.5 ${mutedText}`}>
                       <span>S</span><span>M</span><span>T</span><span>W</span><span>T</span><span>F</span><span>S</span>
                     </div>
 
-                    <div className="grid grid-cols-7 gap-y-0.5 text-center text-[9px] tabular-nums">
+                    <div className="grid grid-cols-7 gap-y-0.5 text-center text-[10px] tabular-nums">
                       {Array.from({ length: firstDayWeekday }).map((_, i) => (
                         <span key={`empty-${i}`} className="text-transparent">.</span>
                       ))}
@@ -989,14 +1359,12 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
                         return (
                           <span
                             key={`day-${dayNum}`}
-                            className={`h-4 flex items-center justify-center rounded-full ${
+                            className={`h-[19px] flex items-center justify-center rounded-full ${
                               isToday
-                                ? isLight
-                                  ? "bg-zinc-900 text-white font-bold"
-                                  : "bg-white text-black font-bold"
+                                ? "bg-[#f97316] text-white font-bold"
                                 : isLight
-                                  ? "text-zinc-700 hover:bg-zinc-100"
-                                  : "text-zinc-300 hover:bg-zinc-800"
+                                  ? "text-zinc-800 hover:bg-zinc-100"
+                                  : "text-zinc-200 hover:bg-zinc-800"
                             }`}
                           >
                             {dayNum}
@@ -1009,117 +1377,150 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
               )}
 
               {/* ===================================================== */}
-              {/* TAB 3: COUNTDOWN TIMER (12-COL GRID)                  */}
+              {/* TAB 3: COUNTDOWN TIMER (SOFT CHIME, NO ENDLESS PULSE) */}
               {/* ===================================================== */}
               {activeTab === "timer" && (
-                <div className="w-full h-full grid grid-cols-12 gap-3 items-stretch">
-                  {/* Left (5 cols): Display & Fine Adjustments */}
-                  <div className={`col-span-5 p-3 flex flex-col justify-between ${cardCls}`}>
+                <div className="w-full h-full grid grid-cols-12 gap-4 items-stretch">
+                  <div className="col-span-5 py-1 px-1 flex flex-col justify-between">
                     <div>
                       <div className="flex items-center justify-between">
-                        <span className="text-[10px] uppercase tracking-wider text-zinc-500 font-medium">Countdown</span>
-                        <span className={`text-[9px] font-semibold ${isTimerFinished ? "text-amber-500" : "text-zinc-500"}`}>
-                          {isTimerFinished ? "Done" : isTimerRunning ? "Active" : "Ready"}
+                        <span className={`text-[10px] font-medium ${mutedText}`}>Countdown</span>
+                        <span
+                          className={`text-[10px] font-semibold ${
+                            isTimerFinished || isTimerRunning ? "text-[#f97316]" : mutedText
+                          }`}
+                        >
+                          {isTimerFinished ? "Complete" : isTimerRunning ? "Running" : "Ready"}
                         </span>
                       </div>
                       <div
-                        className={`text-3xl font-mono font-bold tabular-nums mt-1.5 leading-none ${
-                          isTimerFinished ? "text-amber-500 animate-pulse" : ""
+                        className={`text-4xl font-mono font-bold tabular-nums mt-2 leading-none ${
+                          isTimerFinished ? "text-[#f97316]" : ""
                         }`}
                       >
                         {formatTime(timerRemaining)}
                       </div>
                     </div>
 
-                    <div className="grid grid-cols-3 gap-1">
+                    <div className="grid grid-cols-3 gap-1.5">
                       <button
                         onClick={() => handleAdjustTimer(-60)}
-                        className={`py-1 rounded-md border text-[10px] font-mono transition-colors ${subtleBtnCls}`}
+                        className={`py-1.5 rounded-lg border text-[10px] font-mono transition-all ${focusRing} ${subtleBtnCls}`}
                       >
                         -1m
                       </button>
                       <button
                         onClick={() => handleAdjustTimer(60)}
-                        className={`py-1 rounded-md border text-[10px] font-mono transition-colors ${subtleBtnCls}`}
+                        className={`py-1.5 rounded-lg border text-[10px] font-mono transition-all ${focusRing} ${subtleBtnCls}`}
                       >
                         +1m
                       </button>
                       <button
                         onClick={() => handleAdjustTimer(10)}
-                        className={`py-1 rounded-md border text-[10px] font-mono transition-colors ${subtleBtnCls}`}
+                        className={`py-1.5 rounded-lg border text-[10px] font-mono transition-all ${focusRing} ${subtleBtnCls}`}
                       >
                         +10s
                       </button>
                     </div>
                   </div>
 
-                  {/* Right (7 cols): 2x2 Presets, Progress & Actions */}
-                  <div className="col-span-7 flex flex-col justify-between gap-2">
-                    <div className="grid grid-cols-2 gap-1.5">
-                      {[
-                        { label: "1 min", sec: 60 },
-                        { label: "5 min", sec: 300 },
-                        { label: "15 min", sec: 900 },
-                        { label: "25m Focus", sec: 1500 },
-                      ].map((preset) => {
-                        const active = timerDuration === preset.sec;
-                        return (
+                  <div className="col-span-7 flex flex-col justify-between gap-2.5 py-0.5">
+                    {isTimerFinished ? (
+                      <div className={`flex-1 p-3 flex flex-col justify-between border border-[#f97316]/60 rounded-xl ${isLight ? "bg-orange-50" : "bg-[#1a1410]"}`}>
+                        <div>
+                          <div className="text-xs font-semibold text-[#f97316]">Timer Completed</div>
+                          <p className={`text-[11px] mt-0.5 ${mutedText}`}>
+                            Your countdown reached 0:00.
+                          </p>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
                           <button
-                            key={preset.sec}
-                            onClick={() => handleSetPresetTimer(preset.sec)}
-                            className={`py-2 rounded-lg text-[11px] font-medium transition-colors border ${
-                              active
-                                ? isLight
-                                  ? "bg-zinc-900 border-zinc-900 text-white font-semibold"
-                                  : "bg-zinc-800 border-zinc-600 text-white font-semibold"
-                                : subtleBtnCls
-                            }`}
+                            onClick={handleResetTimer}
+                            className={`py-1.5 rounded-lg text-xs font-semibold transition-all ${focusRing} ${primaryBtnCls}`}
                           >
-                            {preset.label}
+                            Dismiss
                           </button>
-                        );
-                      })}
-                    </div>
+                          <button
+                            onClick={() => {
+                              handleSetPresetTimer(300);
+                              setIsTimerRunning(true);
+                            }}
+                            className={`py-1.5 rounded-lg text-xs font-medium border transition-all ${focusRing} ${subtleBtnCls}`}
+                          >
+                            +5 min
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="grid grid-cols-2 gap-1.5">
+                          {[
+                            { label: "1 min", sec: 60 },
+                            { label: "5 min", sec: 300 },
+                            { label: "15 min", sec: 900 },
+                            { label: "25m Focus", sec: 1500 },
+                          ].map((preset) => {
+                            const active = timerDuration === preset.sec;
+                            return (
+                              <button
+                                key={preset.sec}
+                                onClick={() => handleSetPresetTimer(preset.sec)}
+                                className={`py-2 rounded-lg text-[11px] font-medium transition-all border ${focusRing} ${
+                                  active
+                                    ? isLight
+                                      ? "bg-zinc-900 border-zinc-900 text-white font-semibold"
+                                      : "bg-zinc-800 border-zinc-600 text-white font-semibold"
+                                    : subtleBtnCls
+                                }`}
+                              >
+                                {preset.label}
+                              </button>
+                            );
+                          })}
+                        </div>
 
-                    <div className={`w-full h-1.5 rounded-full overflow-hidden ${isLight ? "bg-zinc-300" : "bg-zinc-800"}`}>
-                      <div
-                        className={`h-full transition-all duration-300 ${
-                          isTimerFinished ? "bg-amber-500" : isLight ? "bg-zinc-900" : "bg-white"
-                        }`}
-                        style={{
-                          width: `${timerDuration > 0 ? ((timerDuration - timerRemaining) / timerDuration) * 100 : 0}%`,
-                        }}
-                      />
-                    </div>
+                        <div className={`w-full h-1.5 rounded-full overflow-hidden ${isLight ? "bg-zinc-300" : "bg-zinc-800"}`}>
+                          <div
+                            className="h-full bg-[#f97316] transition-all duration-300"
+                            style={{
+                              width: `${
+                                timerDuration > 0
+                                  ? ((timerDuration - timerRemaining) / timerDuration) * 100
+                                  : 0
+                              }%`,
+                            }}
+                          />
+                        </div>
 
-                    <div className="grid grid-cols-2 gap-1.5">
-                      <button
-                        onClick={handleStartPauseTimer}
-                        className={`py-1.5 rounded-lg font-semibold text-xs transition-colors ${primaryBtnCls}`}
-                      >
-                        {isTimerRunning ? "Pause" : timerRemaining === 0 ? "Restart" : "Start"}
-                      </button>
-                      <button
-                        onClick={handleResetTimer}
-                        className={`py-1.5 rounded-lg text-xs font-medium transition-colors border ${subtleBtnCls}`}
-                      >
-                        Reset
-                      </button>
-                    </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <button
+                            onClick={handleStartPauseTimer}
+                            className={`py-1.5 rounded-lg font-semibold text-xs transition-all ${focusRing} ${primaryBtnCls}`}
+                          >
+                            {isTimerRunning ? "Pause" : "Start"}
+                          </button>
+                          <button
+                            onClick={handleResetTimer}
+                            className={`py-1.5 rounded-lg text-xs font-medium transition-all border ${focusRing} ${subtleBtnCls}`}
+                          >
+                            Reset
+                          </button>
+                        </div>
+                      </>
+                    )}
                   </div>
                 </div>
               )}
 
               {/* ===================================================== */}
-              {/* TAB 4: STOPWATCH (12-COL GRID)                        */}
+              {/* TAB 4: STOPWATCH                                      */}
               {/* ===================================================== */}
               {activeTab === "stopwatch" && (
-                <div className="w-full h-full grid grid-cols-12 gap-3 items-stretch">
-                  {/* Left (5 cols): Main Counter & Controls */}
-                  <div className={`col-span-5 p-3 flex flex-col justify-between ${cardCls}`}>
+                <div className="w-full h-full grid grid-cols-12 gap-4 items-stretch">
+                  <div className="col-span-5 py-1 px-1 flex flex-col justify-between">
                     <div>
-                      <div className="text-[10px] uppercase tracking-wider text-zinc-500 font-medium">Stopwatch</div>
-                      <div className="text-2xl font-mono font-bold tabular-nums tracking-tight mt-1.5 leading-none">
+                      <div className={`text-[10px] font-medium ${mutedText}`}>Stopwatch</div>
+                      <div className="text-[28px] font-mono font-bold tabular-nums tracking-tight mt-2 leading-none">
                         {formatStopwatch(stopwatchTimeMs)}
                       </div>
                     </div>
@@ -1127,7 +1528,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
                     <div className="space-y-1.5">
                       <button
                         onClick={handleToggleStopwatch}
-                        className={`w-full py-1.5 rounded-lg font-semibold text-xs transition-colors ${primaryBtnCls}`}
+                        className={`w-full py-1.5 rounded-lg font-semibold text-xs transition-all ${focusRing} ${primaryBtnCls}`}
                       >
                         {isStopwatchRunning ? "Pause" : "Start"}
                       </button>
@@ -1135,14 +1536,14 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
                         <button
                           onClick={handleLapStopwatch}
                           disabled={!isStopwatchRunning}
-                          className={`py-1 rounded-lg text-[10px] font-medium disabled:opacity-40 transition-colors border flex items-center justify-center gap-1 ${subtleBtnCls}`}
+                          className={`py-1.5 rounded-lg text-[10px] font-medium disabled:opacity-40 transition-all border flex items-center justify-center gap-1 ${focusRing} ${subtleBtnCls}`}
                         >
                           <Flag className="w-3 h-3" />
                           <span>Lap</span>
                         </button>
                         <button
                           onClick={handleResetStopwatch}
-                          className={`py-1 rounded-lg text-[10px] font-medium transition-colors border ${subtleBtnCls}`}
+                          className={`py-1.5 rounded-lg text-[10px] font-medium transition-all border ${focusRing} ${subtleBtnCls}`}
                         >
                           Reset
                         </button>
@@ -1150,27 +1551,30 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
                     </div>
                   </div>
 
-                  {/* Right (7 cols): Scrollable Laps Grid */}
-                  <div className={`col-span-7 p-2.5 flex flex-col overflow-hidden ${cardCls}`}>
-                    <div className="flex items-center justify-between text-[10px] text-zinc-500 font-medium pb-1.5 border-b border-zinc-800/40">
+                  <div className={`col-span-7 p-2.5 flex flex-col overflow-hidden ${surfaceSubtle}`}>
+                    <div
+                      className={`flex items-center justify-between text-[10px] font-medium pb-1.5 border-b ${
+                        isLight ? "border-zinc-200 text-zinc-600" : "border-zinc-800 text-zinc-400"
+                      }`}
+                    >
                       <span>Lap Splits</span>
                       <span className="font-mono tabular-nums">{stopwatchLaps.length} laps</span>
                     </div>
 
                     <div className="scrollable-area flex-1 overflow-y-auto pt-1.5 space-y-1 font-mono tabular-nums text-[11px]">
                       {stopwatchLaps.length === 0 ? (
-                        <div className="w-full h-full flex items-center justify-center text-zinc-500 text-[10px] font-sans">
+                        <div className={`w-full h-full flex items-center justify-center text-[11px] font-sans ${mutedText}`}>
                           Press Lap while running to record splits
                         </div>
                       ) : (
                         stopwatchLaps.map((lapMs, idx) => (
                           <div
                             key={idx}
-                            className={`grid grid-cols-2 items-center px-2 py-1 rounded ${
-                              isLight ? "bg-zinc-100 text-zinc-700" : "bg-zinc-950/60 text-zinc-300"
+                            className={`grid grid-cols-2 items-center px-2 py-1 rounded-md ${
+                              isLight ? "bg-zinc-100 text-zinc-800" : "bg-[#0c0c0e] text-zinc-200"
                             }`}
                           >
-                            <span className="text-[10px] text-zinc-500">Lap #{stopwatchLaps.length - idx}</span>
+                            <span className={`text-[10px] ${mutedText}`}>Lap #{stopwatchLaps.length - idx}</span>
                             <span className="text-right font-semibold">{formatStopwatch(lapMs)}</span>
                           </div>
                         ))
@@ -1181,26 +1585,25 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
               )}
 
               {/* ===================================================== */}
-              {/* TAB 5: WEATHER & TEMPERATURE (12-COL GRID)            */}
+              {/* TAB 5: WEATHER (OPEN HERO + HONEST ERROR/RETRY STATE) */}
               {/* ===================================================== */}
               {activeTab === "weather" && (
-                <div className="w-full h-full grid grid-cols-12 gap-3 items-stretch">
-                  {/* Left (5 cols): Main Condition Card */}
-                  <div className={`col-span-5 p-3 flex flex-col justify-between ${cardCls}`}>
+                <div className="w-full h-full grid grid-cols-12 gap-4 items-stretch">
+                  {/* Left (5 cols): Open typographic hero without boxy border */}
+                  <div className="col-span-5 py-1 px-1 flex flex-col justify-between">
                     <div className="flex items-start justify-between">
-                      <div className="flex items-center gap-2">
-                        {renderWeatherIcon(
-                          weather?.icon || "cloud-sun",
-                          `w-6 h-6 ${isLight ? "text-zinc-900" : "text-white"}`
-                        )}
-                        <span className="text-2xl font-bold tabular-nums leading-none">
-                          {weather ? `${weather.temperature}°C` : "--°C"}
+                      <div className="flex items-center gap-2.5">
+                        {renderWeatherIcon(weather?.icon || "cloud-sun", "w-7 h-7")}
+                        <span className="text-3xl font-bold tabular-nums leading-none">
+                          {weather ? `${weather.temperature}°` : "--°"}
                         </span>
                       </div>
                       <button
                         onClick={() => loadWeather()}
                         disabled={weatherLoading}
-                        className={`p-1 rounded-md transition-colors ${isLight ? "text-zinc-500 hover:bg-zinc-100" : "text-zinc-400 hover:bg-zinc-800"}`}
+                        className={`p-1.5 rounded-lg transition-colors ${focusRing} ${
+                          isLight ? "text-zinc-600 hover:bg-zinc-200" : "text-zinc-400 hover:bg-zinc-800"
+                        }`}
                         title="Refresh Weather"
                       >
                         <RefreshCw className={`w-3.5 h-3.5 ${weatherLoading ? "animate-spin" : ""}`} />
@@ -1208,48 +1611,53 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
                     </div>
 
                     <div>
-                      <div className="text-xs font-semibold truncate">
-                        {weather ? weather.city : weatherLoading ? "Detecting..." : "Unavailable"}
+                      <div className="text-sm font-semibold truncate">
+                        {weather ? weather.city : weatherLoading ? "Loading weather..." : "Weather Offline"}
                       </div>
-                      <div className="text-[10px] text-zinc-500 truncate mt-0.5">
-                        {weatherError || (weather ? weather.condition : "Auto-detecting location")}
+                      <div className={`text-[11px] truncate mt-0.5 ${mutedText}`}>
+                        {weatherError || (weather ? weather.condition : "Detecting current city")}
                       </div>
+                      {weatherError && (
+                        <button
+                          onClick={() => loadWeather()}
+                          className={`mt-2 px-2.5 py-1 rounded-md text-[10px] font-semibold ${primaryBtnCls}`}
+                        >
+                          Retry
+                        </button>
+                      )}
                     </div>
 
-                    <div className={`pt-1.5 border-t text-[9px] text-zinc-500 ${isLight ? "border-zinc-200" : "border-zinc-800"}`}>
-                      Powered by Open-Meteo
-                    </div>
+                    <div className={`text-[10px] ${mutedText}`}>Open-Meteo Live</div>
                   </div>
 
-                  {/* Right (7 cols): City Search + 2x2 Metrics Grid */}
-                  <div className="col-span-7 flex flex-col justify-between gap-2">
+                  {/* Right (7 cols): City Search + Clean Hairline Metrics */}
+                  <div className="col-span-7 flex flex-col justify-between gap-2.5">
                     <form onSubmit={handleSearchWeatherCity} className="grid grid-cols-[1fr_auto] gap-1.5">
                       <div className="relative">
                         <input
                           type="text"
                           value={weatherCityInput}
                           onChange={(e) => setWeatherCityInput(e.target.value)}
-                          placeholder="Change city (e.g. Tokyo, Jakarta)..."
-                          className={`w-full h-7 text-[10px] rounded-lg pl-7 pr-2 border focus:outline-none ${
+                          placeholder="Set city (e.g. Jakarta, Tokyo)..."
+                          className={`w-full h-7 text-[11px] rounded-lg pl-7 pr-2 border focus:outline-none focus-visible:ring-1 focus-visible:ring-[#f97316] ${
                             isLight
-                              ? "bg-white border-zinc-300 text-zinc-900 placeholder-zinc-400"
-                              : "bg-zinc-900 border-zinc-800 text-white placeholder-zinc-500"
+                              ? "bg-white border-zinc-300 text-zinc-900 placeholder-zinc-500"
+                              : "bg-[#141418] border-zinc-800 text-zinc-100 placeholder-zinc-500"
                           }`}
                         />
                         <Search className="w-3 h-3 text-zinc-500 absolute left-2.5 top-2" />
                       </div>
                       <button
                         type="submit"
-                        className={`h-7 px-2.5 rounded-lg text-[10px] font-semibold transition-colors ${primaryBtnCls}`}
+                        className={`h-7 px-3 rounded-lg text-[10px] font-semibold transition-all ${focusRing} ${primaryBtnCls}`}
                       >
                         Set
                       </button>
                     </form>
 
-                    {/* 2x2 Metrics Grid */}
-                    <div className="grid grid-cols-2 grid-rows-2 gap-1.5 flex-1">
-                      <div className={`p-2 flex flex-col justify-between ${cardCls}`}>
-                        <div className="flex items-center gap-1 text-[9px] text-zinc-500">
+                    <div className={`grid grid-cols-2 grid-rows-2 gap-px rounded-xl overflow-hidden flex-1 border ${isLight ? "bg-zinc-200 border-zinc-200" : "bg-zinc-800 border-zinc-800"}`}>
+                      <div className={`p-2.5 flex flex-col justify-between ${isLight ? "bg-white" : "bg-[#141418]"}`}>
+                        <div className={`flex items-center gap-1.5 text-[10px] ${mutedText}`}>
                           <Thermometer className="w-3 h-3" />
                           <span>Feels Like</span>
                         </div>
@@ -1258,8 +1666,8 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
                         </div>
                       </div>
 
-                      <div className={`p-2 flex flex-col justify-between ${cardCls}`}>
-                        <div className="flex items-center gap-1 text-[9px] text-zinc-500">
+                      <div className={`p-2.5 flex flex-col justify-between ${isLight ? "bg-white" : "bg-[#141418]"}`}>
+                        <div className={`flex items-center gap-1.5 text-[10px] ${mutedText}`}>
                           <Droplets className="w-3 h-3" />
                           <span>Humidity</span>
                         </div>
@@ -1268,8 +1676,8 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
                         </div>
                       </div>
 
-                      <div className={`p-2 flex flex-col justify-between ${cardCls}`}>
-                        <div className="flex items-center gap-1 text-[9px] text-zinc-500">
+                      <div className={`p-2.5 flex flex-col justify-between ${isLight ? "bg-white" : "bg-[#141418]"}`}>
+                        <div className={`flex items-center gap-1.5 text-[10px] ${mutedText}`}>
                           <Wind className="w-3 h-3" />
                           <span>Wind</span>
                         </div>
@@ -1278,8 +1686,8 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
                         </div>
                       </div>
 
-                      <div className={`p-2 flex flex-col justify-between ${cardCls}`}>
-                        <div className="flex items-center gap-1 text-[9px] text-zinc-500">
+                      <div className={`p-2.5 flex flex-col justify-between ${isLight ? "bg-white" : "bg-[#141418]"}`}>
+                        <div className={`flex items-center gap-1.5 text-[10px] ${mutedText}`}>
                           <ArrowUpDown className="w-3 h-3" />
                           <span>High / Low</span>
                         </div>
@@ -1293,196 +1701,441 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
               )}
 
               {/* ===================================================== */}
-              {/* TAB 6: QUICK SCRATCHPAD / NOTES                       */}
+              {/* TAB 6: NOTES SCRATCHPAD & LOCAL CLIPBOARD HISTORY     */}
               {/* ===================================================== */}
               {activeTab === "notes" && (
-                <div className="w-full h-full grid grid-rows-[1fr_auto] gap-2">
-                  <textarea
-                    value={notesText}
-                    onChange={(e) => handleNotesChange(e.target.value)}
-                    placeholder="Type quick notes, reminders, or paste snippets here... (Auto-saved)"
-                    className={`w-full h-full resize-none rounded-xl border p-2.5 text-xs leading-relaxed focus:outline-none select-text ${
-                      isLight
-                        ? "bg-white border-zinc-300 text-zinc-900 placeholder-zinc-400 focus:border-zinc-500"
-                        : "bg-zinc-900/90 border-zinc-800 text-zinc-100 placeholder-zinc-500 focus:border-zinc-600"
-                    }`}
-                  />
-
-                  <div className="grid grid-cols-[1fr_auto] items-center gap-2">
-                    <span className="text-[10px] text-zinc-500 font-mono tabular-nums">
-                      {wordCount} words • {notesText.length} chars • Saved locally
-                    </span>
-
-                    <div className="flex items-center gap-1.5">
+                <div className="w-full h-full grid grid-rows-[auto_1fr_auto] gap-2">
+                  {/* Sub-mode switcher */}
+                  <div className="flex items-center justify-between">
+                    <div
+                      className={`grid grid-cols-2 p-0.5 rounded-lg border text-[10px] font-medium ${
+                        isLight ? "bg-zinc-200/80 border-zinc-300" : "bg-[#141418] border-zinc-800"
+                      }`}
+                    >
                       <button
-                        onClick={handleCopyNotes}
-                        disabled={!notesText}
-                        className={`px-2.5 py-1 rounded-lg text-[10px] font-medium border transition-colors flex items-center gap-1 disabled:opacity-40 ${subtleBtnCls}`}
+                        onClick={() => setNotesMode("scratchpad")}
+                        className={`px-2.5 py-0.5 rounded-md flex items-center gap-1 transition-all ${
+                          notesMode === "scratchpad"
+                            ? isLight
+                              ? "bg-white text-zinc-950 font-semibold shadow-sm"
+                              : "bg-zinc-800 text-white font-semibold"
+                            : mutedText
+                        }`}
                       >
-                        {notesCopied ? (
-                          <>
-                            <Check className="w-3 h-3 text-emerald-500" />
-                            <span className="text-emerald-500">Copied</span>
-                          </>
-                        ) : (
-                          <>
-                            <Copy className="w-3 h-3" />
-                            <span>Copy All</span>
-                          </>
-                        )}
+                        <StickyNote className="w-3 h-3" />
+                        <span>Scratchpad</span>
                       </button>
-
                       <button
-                        onClick={() => handleNotesChange("")}
-                        disabled={!notesText}
-                        className={`px-2 py-1 rounded-lg text-[10px] font-medium border transition-colors flex items-center gap-1 disabled:opacity-40 ${subtleBtnCls}`}
-                        title="Clear Scratchpad"
+                        onClick={() => setNotesMode("clipboard")}
+                        className={`px-2.5 py-0.5 rounded-md flex items-center gap-1 transition-all ${
+                          notesMode === "clipboard"
+                            ? isLight
+                              ? "bg-white text-zinc-950 font-semibold shadow-sm"
+                              : "bg-zinc-800 text-white font-semibold"
+                            : mutedText
+                        }`}
                       >
-                        <Trash2 className="w-3 h-3" />
-                        <span>Clear</span>
+                        <Clipboard className="w-3 h-3" />
+                        <span>Clipboard ({clipboardHistory.length})</span>
                       </button>
                     </div>
+
+                    {notesMode === "clipboard" && clipboardHistory.length > 0 && (
+                      <button
+                        onClick={handleClearClipboard}
+                        className={`px-2 py-0.5 rounded-md text-[10px] border transition-colors ${subtleBtnCls}`}
+                      >
+                        Clear History
+                      </button>
+                    )}
+                  </div>
+
+                  {notesMode === "scratchpad" ? (
+                    <>
+                      <textarea
+                        value={notesText}
+                        onChange={(e) => handleNotesChange(e.target.value)}
+                        placeholder="Quick notes, reminders, or snippets... (Auto-saved locally)"
+                        className={`w-full h-full resize-none rounded-xl border p-2.5 text-xs leading-relaxed focus:outline-none focus-visible:ring-1 focus-visible:ring-[#f97316] select-text ${
+                          isLight
+                            ? "bg-white border-zinc-300 text-zinc-900 placeholder-zinc-500"
+                            : "bg-[#141418] border-zinc-800 text-zinc-100 placeholder-zinc-500"
+                        }`}
+                      />
+
+                      <div className="grid grid-cols-[1fr_auto] items-center gap-2">
+                        <span className={`text-[10px] font-mono tabular-nums ${mutedText}`}>
+                          {wordCount} words · {notesText.length} chars
+                        </span>
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            onClick={handleCopyNotes}
+                            disabled={!notesText}
+                            className={`px-2.5 py-1 rounded-lg text-[10px] font-medium border transition-all flex items-center gap-1 disabled:opacity-40 ${focusRing} ${subtleBtnCls}`}
+                          >
+                            {notesCopied ? (
+                              <>
+                                <Check className="w-3 h-3 text-emerald-500" />
+                                <span className="text-emerald-500">Copied</span>
+                              </>
+                            ) : (
+                              <>
+                                <Copy className="w-3 h-3" />
+                                <span>Copy All</span>
+                              </>
+                            )}
+                          </button>
+                          <button
+                            onClick={() => handleNotesChange("")}
+                            disabled={!notesText}
+                            className={`px-2 py-1 rounded-lg text-[10px] font-medium border transition-all flex items-center gap-1 disabled:opacity-40 ${focusRing} ${subtleBtnCls}`}
+                          >
+                            <Trash2 className="w-3 h-3" />
+                            <span>Clear</span>
+                          </button>
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className={`scrollable-area overflow-y-auto p-1.5 space-y-1 ${surfaceSubtle}`}>
+                        {clipboardHistory.length === 0 ? (
+                          <div className={`w-full h-full flex flex-col items-center justify-center text-center px-4 ${mutedText}`}>
+                            <p className="text-[11px] font-medium">Clipboard history is empty</p>
+                            <p className="text-[10px] mt-0.5">Copy any text with Ctrl+C to capture it locally here.</p>
+                          </div>
+                        ) : (
+                          clipboardHistory.map((item) => (
+                            <div
+                              key={item.id}
+                              className={`grid grid-cols-[1fr_auto] items-center gap-2 px-2.5 py-1.5 rounded-lg transition-colors ${
+                                isLight ? "bg-zinc-100/80 hover:bg-zinc-200/70" : "bg-[#0c0c0e] hover:bg-zinc-800/80"
+                              }`}
+                            >
+                              <span className="text-[11px] truncate" title={item.text}>
+                                {item.text.replace(/\s+/g, " ")}
+                              </span>
+                              <div className="flex items-center gap-1">
+                                <button
+                                  onClick={() => handleCopyClipItem(item)}
+                                  className={`px-2 py-0.5 rounded text-[10px] border transition-colors ${subtleBtnCls}`}
+                                  title="Copy back to clipboard"
+                                >
+                                  {copiedClipId === item.id ? "Copied" : "Copy"}
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    handleNotesChange(notesText ? `${notesText}\n${item.text}` : item.text);
+                                    setNotesMode("scratchpad");
+                                  }}
+                                  className={`px-1.5 py-0.5 rounded text-[10px] border transition-colors ${subtleBtnCls}`}
+                                  title="Append to Scratchpad"
+                                >
+                                  + Note
+                                </button>
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                      <div className={`text-[10px] ${mutedText}`}>
+                        Stored in memory only · Automatically cleared on exit
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+
+              {/* ===================================================== */}
+              {/* TAB 7: FILE DROP SHELF (NATIVE DRAG & DROP TRAY)      */}
+              {/* ===================================================== */}
+              {activeTab === "shelf" && (
+                <div className="w-full h-full grid grid-rows-[1fr_auto] gap-2">
+                  <div
+                    className={`scrollable-area overflow-y-auto p-2 transition-colors ${surfaceSubtle} ${
+                      isDragOver ? "border-[#f97316]" : ""
+                    }`}
+                  >
+                    {shelfFiles.length === 0 ? (
+                      <div className={`w-full h-full flex flex-col items-center justify-center text-center px-6 ${mutedText}`}>
+                        <Inbox className="w-6 h-6 mb-1.5 opacity-70" />
+                        <p className="text-xs font-medium">Drag &amp; drop files onto Dynamic Island</p>
+                        <p className="text-[10px] mt-0.5">
+                          Hold files, screenshots, or folders here for quick access while switching windows.
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="space-y-1.5">
+                        {shelfFiles.map((file) => (
+                          <div
+                            key={file.path}
+                            className={`grid grid-cols-[auto_1fr_auto] items-center gap-2.5 px-2.5 py-1.5 rounded-lg ${
+                              isLight ? "bg-zinc-100" : "bg-[#0c0c0e]"
+                            }`}
+                          >
+                            <div
+                              className={`w-7 h-7 rounded-md flex items-center justify-center text-[9px] font-mono font-bold uppercase ${
+                                isLight ? "bg-zinc-200 text-zinc-800" : "bg-zinc-800 text-zinc-200"
+                              }`}
+                            >
+                              {file.isDir ? "DIR" : file.ext.slice(0, 4) || "FILE"}
+                            </div>
+
+                            <div className="min-w-0">
+                              <div className="text-[11px] font-medium truncate" title={file.path}>
+                                {file.name}
+                              </div>
+                              <div className={`text-[10px] font-mono tabular-nums ${mutedText}`}>
+                                {formatBytes(file.sizeBytes)}
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-1">
+                              <button
+                                onClick={() => handleOpenShelfFile(file.path)}
+                                className={`p-1 rounded border transition-colors ${subtleBtnCls}`}
+                                title="Open File"
+                              >
+                                <ExternalLink className="w-3 h-3" />
+                              </button>
+                              <button
+                                onClick={() => handleRevealShelfFile(file.path)}
+                                className={`p-1 rounded border transition-colors ${subtleBtnCls}`}
+                                title="Show in Explorer"
+                              >
+                                <FolderOpen className="w-3 h-3" />
+                              </button>
+                              <button
+                                onClick={() => handleCopyShelfPath(file.path)}
+                                className={`p-1 rounded border transition-colors ${subtleBtnCls}`}
+                                title="Copy File Path"
+                              >
+                                {copiedPath === file.path ? (
+                                  <Check className="w-3 h-3 text-emerald-500" />
+                                ) : (
+                                  <Copy className="w-3 h-3" />
+                                )}
+                              </button>
+                              <button
+                                onClick={() =>
+                                  setShelfFiles((prev) => prev.filter((f) => f.path !== file.path))
+                                }
+                                className={`p-1 rounded border transition-colors ${subtleBtnCls}`}
+                                title="Remove from Shelf"
+                              >
+                                <X className="w-3 h-3" />
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex items-center justify-between text-[10px]">
+                    <span className={mutedText}>
+                      {shelfFiles.length} {shelfFiles.length === 1 ? "item" : "items"} on shelf
+                    </span>
+                    {shelfFiles.length > 0 && (
+                      <button
+                        onClick={() => setShelfFiles([])}
+                        className={`px-2 py-0.5 rounded-md border transition-colors ${subtleBtnCls}`}
+                      >
+                        Clear Shelf
+                      </button>
+                    )}
                   </div>
                 </div>
               )}
 
               {/* ===================================================== */}
-              {/* TAB 7: SYSTEM MONITOR (CPU/RAM) + VOLUME + AUTOSTART  */}
+              {/* TAB 8: SYSTEM (CPU/RAM, AUDIO OUTPUT SWITCH, SETTINGS)*/}
               {/* ===================================================== */}
               {activeTab === "system" && (
                 <div className="w-full h-full grid grid-cols-12 gap-3 items-stretch">
-                  {/* Left (7 cols): CPU & RAM Real-Time Hardware Cards */}
-                  <div className="col-span-7 grid grid-rows-2 gap-2">
-                    {/* CPU Card */}
-                    <div className={`p-2.5 flex flex-col justify-between ${cardCls}`}>
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-1.5">
-                          <Cpu className="w-3.5 h-3.5 text-zinc-500" />
-                          <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
-                            CPU Load
+                  {/* Left (6 cols): Hardware Monitor + Audio Output Switcher */}
+                  <div className="col-span-6 grid grid-rows-[auto_1fr] gap-2 min-h-0">
+                    {/* Compact CPU + RAM + Battery Strip */}
+                    <div className={`p-2.5 grid grid-cols-2 gap-3 ${surfaceSubtle}`}>
+                      <div className="flex flex-col justify-between gap-1">
+                        <div className="flex items-center justify-between">
+                          <span className={`text-[10px] font-medium ${mutedText}`}>CPU</span>
+                          <span className="text-xs font-mono font-bold tabular-nums">
+                            {sysStats.cpuPercent.toFixed(0)}%
                           </span>
                         </div>
-                        <span className="text-xs font-mono font-bold tabular-nums">
-                          {sysStats.cpuPercent.toFixed(1)}%
-                        </span>
+                        <div
+                          className="grid gap-[2px] items-end h-4"
+                          style={{ gridTemplateColumns: "repeat(14, minmax(0, 1fr))" }}
+                        >
+                          {cpuHistory.map((val, idx) => (
+                            <div
+                              key={idx}
+                              className={`rounded-sm transition-all duration-300 ${
+                                idx === cpuHistory.length - 1
+                                  ? "bg-[#f97316]"
+                                  : isLight
+                                    ? "bg-zinc-700"
+                                    : "bg-zinc-400"
+                              }`}
+                              style={{
+                                height: `${Math.max(18, Math.min(100, val))}%`,
+                                opacity: 0.35 + (idx / cpuHistory.length) * 0.65,
+                              }}
+                            />
+                          ))}
+                        </div>
                       </div>
 
-                      {/* 14-Bar Live CPU History Sparkline */}
-                      <div className="grid grid-cols-14 gap-1 items-end h-5 pt-1" style={{ gridTemplateColumns: "repeat(14, minmax(0, 1fr))" }}>
-                        {cpuHistory.map((val, idx) => (
-                          <div
-                            key={idx}
-                            className={`rounded-sm transition-all duration-300 ${
-                              isLight ? "bg-zinc-800" : "bg-zinc-300"
-                            }`}
-                            style={{
-                              height: `${Math.max(15, Math.min(100, val))}%`,
-                              opacity: 0.35 + (idx / cpuHistory.length) * 0.65,
-                            }}
-                          />
-                        ))}
-                      </div>
-                    </div>
-
-                    {/* RAM Card */}
-                    <div className={`p-2.5 flex flex-col justify-between ${cardCls}`}>
-                      <div className="flex items-center justify-between">
-                        <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
-                          Memory (RAM)
-                        </span>
-                        <span className="text-xs font-mono font-bold tabular-nums">
-                          {sysStats.ramPercent.toFixed(1)}%
-                        </span>
-                      </div>
-
-                      <div className="space-y-1">
+                      <div className="flex flex-col justify-between gap-1">
+                        <div className="flex items-center justify-between">
+                          <span className={`text-[10px] font-medium ${mutedText}`}>RAM</span>
+                          <span className="text-xs font-mono font-bold tabular-nums">
+                            {sysStats.ramPercent.toFixed(0)}%
+                          </span>
+                        </div>
                         <div className={`w-full h-1.5 rounded-full overflow-hidden ${isLight ? "bg-zinc-200" : "bg-zinc-800"}`}>
                           <div
-                            className={`h-full rounded-full transition-all duration-300 ${isLight ? "bg-zinc-900" : "bg-white"}`}
+                            className={`h-full rounded-full transition-all duration-300 ${isLight ? "bg-zinc-900" : "bg-zinc-100"}`}
                             style={{ width: `${Math.min(100, sysStats.ramPercent)}%` }}
                           />
                         </div>
-                        <div className="text-[9px] font-mono tabular-nums text-zinc-500 flex justify-between">
-                          <span>{sysStats.ramUsedGb.toFixed(1)} GB used</span>
-                          <span>{sysStats.ramTotalGb.toFixed(1)} GB total</span>
+                        <div className={`text-[9px] font-mono tabular-nums ${mutedText}`}>
+                          {sysStats.ramUsedGb.toFixed(1)}/{sysStats.ramTotalGb.toFixed(0)} GB
                         </div>
+                      </div>
+                    </div>
+
+                    {/* Audio Output Device Switcher */}
+                    <div className={`p-2 flex flex-col overflow-hidden min-h-0 ${surfaceSubtle}`}>
+                      <div className="flex items-center justify-between pb-1 mb-1 border-b border-zinc-800/30">
+                        <div className={`flex items-center gap-1.5 text-[10px] font-medium ${mutedText}`}>
+                          <Speaker className="w-3 h-3" />
+                          <span>Audio Output</span>
+                        </div>
+                        {battery.hasBattery && (
+                          <div className={`flex items-center gap-1 text-[10px] font-mono tabular-nums ${mutedText}`}>
+                            {battery.isCharging ? (
+                              <BatteryCharging className="w-3 h-3 text-[#f97316]" />
+                            ) : (
+                              <Battery className="w-3 h-3" />
+                            )}
+                            <span>{battery.percent}%</span>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="scrollable-area flex-1 overflow-y-auto space-y-1">
+                        {audioDevices.length === 0 ? (
+                          <div className={`text-[10px] py-2 text-center ${mutedText}`}>
+                            No active output devices
+                          </div>
+                        ) : (
+                          audioDevices.map((dev) => (
+                            <button
+                              key={dev.id}
+                              onClick={() => handleSwitchAudioDevice(dev)}
+                              className={`w-full text-left px-2 py-1 rounded-md text-[10px] flex items-center justify-between gap-2 transition-colors ${focusRing} ${
+                                dev.isDefault
+                                  ? isLight
+                                    ? "bg-zinc-900 text-white font-semibold"
+                                    : "bg-zinc-800 text-white font-semibold"
+                                  : isLight
+                                    ? "hover:bg-zinc-100 text-zinc-700"
+                                    : "hover:bg-zinc-800/60 text-zinc-300"
+                              }`}
+                              title={dev.name}
+                            >
+                              <span className="truncate">{dev.name}</span>
+                              {dev.isDefault && (
+                                <span className="w-1.5 h-1.5 rounded-full bg-[#f97316] flex-shrink-0" />
+                              )}
+                            </button>
+                          ))
+                        )}
                       </div>
                     </div>
                   </div>
 
-                  {/* Right (5 cols): Master Volume & Windows Auto-Start */}
-                  <div className="col-span-5 grid grid-rows-2 gap-2">
+                  {/* Right (6 cols): Volume ScrubBar + Fullscreen Hide + Auto-Start */}
+                  <div className="col-span-6 grid grid-rows-3 gap-2">
                     {/* Volume Card */}
-                    <div className={`p-2.5 flex flex-col justify-between ${cardCls}`}>
+                    <div className={`px-3 py-2 flex flex-col justify-center gap-1 ${surfaceSubtle}`}>
                       <div className="flex items-center justify-between">
-                        <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
-                          Volume
-                        </span>
+                        <span className={`text-[10px] font-medium ${mutedText}`}>Master Volume</span>
                         <span className="text-[11px] font-mono font-bold tabular-nums">
                           {volume.muted ? "Muted" : `${volume.level}%`}
                         </span>
                       </div>
-
                       <div className="grid grid-cols-[auto_1fr] items-center gap-2">
                         <button
                           onClick={handleToggleMute}
-                          className={`p-1 rounded transition-colors ${isLight ? "text-zinc-700 hover:bg-zinc-100" : "text-zinc-300 hover:bg-zinc-800"}`}
-                          title={volume.muted ? "Unmute" : "Mute"}
+                          className={`p-1 rounded ${focusRing} ${isLight ? "text-zinc-700 hover:bg-zinc-100" : "text-zinc-300 hover:bg-zinc-800"}`}
                         >
                           {renderVolumeIcon("w-3.5 h-3.5")}
                         </button>
-                        <input
-                          type="range"
-                          min={0}
-                          max={100}
+                        <ScrubBar
                           value={volume.muted ? 0 : volume.level}
-                          onChange={(e) => handleSetVolume(Number(e.target.value))}
-                          className={`w-full h-1.5 rounded-lg appearance-none cursor-pointer ${
-                            isLight ? "bg-zinc-300 accent-zinc-900" : "bg-zinc-700 accent-white"
-                          }`}
+                          max={100}
+                          onChange={handleSetVolume}
+                          isLight={isLight}
+                          accent
+                          ariaLabel="System master volume"
                         />
                       </div>
                     </div>
 
-                    {/* Auto-Start on Windows Boot Card */}
-                    <div className={`p-2.5 flex flex-col justify-between ${cardCls}`}>
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-1.5">
-                          <Power className="w-3.5 h-3.5 text-zinc-500" />
-                          <span className="text-[10px] font-semibold">Auto-Start</span>
+                    {/* Auto-Hide on Fullscreen */}
+                    <div className={`px-3 py-2 flex items-center justify-between gap-2 ${surfaceSubtle}`}>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5 text-[11px] font-medium">
+                          <Monitor className={`w-3.5 h-3.5 flex-shrink-0 ${mutedText}`} />
+                          <span className="truncate">Auto-Hide Fullscreen</span>
                         </div>
-
-                        <button
-                          onClick={handleToggleAutostart}
-                          disabled={autostartBusy}
-                          className={`w-8 h-4 rounded-full p-0.5 transition-colors flex items-center ${
-                            autostartEnabled
-                              ? isLight
-                                ? "bg-zinc-900 justify-end"
-                                : "bg-white justify-end"
-                              : isLight
-                                ? "bg-zinc-300 justify-start"
-                                : "bg-zinc-700 justify-start"
-                          }`}
-                          title="Launch MS Island automatically when Windows starts"
-                        >
-                          <div
-                            className={`w-3 h-3 rounded-full transition-transform ${
-                              autostartEnabled
-                                ? isLight
-                                  ? "bg-white"
-                                  : "bg-black"
-                                : isLight
-                                  ? "bg-white"
-                                  : "bg-zinc-300"
-                            }`}
-                          />
-                        </button>
+                        <div className={`text-[10px] truncate ${mutedText}`}>
+                          Hide during videos &amp; games
+                        </div>
                       </div>
+                      <button
+                        onClick={handleToggleAutoHideFullscreen}
+                        aria-label="Toggle auto-hide on fullscreen"
+                        className={`w-9 h-5 rounded-full p-0.5 transition-colors flex items-center flex-shrink-0 ${focusRing} ${
+                          autoHideFullscreen
+                            ? "bg-[#f97316] justify-end"
+                            : isLight
+                              ? "bg-zinc-300 justify-start"
+                              : "bg-zinc-700 justify-start"
+                        }`}
+                      >
+                        <div className="w-4 h-4 rounded-full bg-white shadow-sm" />
+                      </button>
+                    </div>
 
-                      <div className="text-[9px] text-zinc-500 leading-tight">
-                        {autostartEnabled ? "Enabled on Windows boot" : "Launch on Windows startup"}
+                    {/* Auto-Start on Windows Boot */}
+                    <div className={`px-3 py-2 flex items-center justify-between gap-2 ${surfaceSubtle}`}>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5 text-[11px] font-medium">
+                          <Power className={`w-3.5 h-3.5 flex-shrink-0 ${mutedText}`} />
+                          <span className="truncate">Start with Windows</span>
+                        </div>
+                        <div className={`text-[10px] truncate ${mutedText}`}>
+                          {autostartEnabled ? "Enabled on boot" : "Launch manually"}
+                        </div>
                       </div>
+                      <button
+                        onClick={handleToggleAutostart}
+                        disabled={autostartBusy}
+                        aria-label="Toggle start with Windows"
+                        className={`w-9 h-5 rounded-full p-0.5 transition-colors flex items-center flex-shrink-0 ${focusRing} ${
+                          autostartEnabled
+                            ? "bg-[#f97316] justify-end"
+                            : isLight
+                              ? "bg-zinc-300 justify-start"
+                              : "bg-zinc-700 justify-start"
+                        }`}
+                      >
+                        <div className="w-4 h-4 rounded-full bg-white shadow-sm" />
+                      </button>
                     </div>
                   </div>
                 </div>

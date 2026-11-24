@@ -1,15 +1,38 @@
 use serde::{Deserialize, Serialize};
-use windows::core::{PCWSTR, HSTRING};
-use windows::Win32::Foundation::FILETIME;
+use std::os::windows::process::CommandExt;
+use windows::core::{GUID, HSTRING, PCWSTR};
+use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
+use windows::Win32::Foundation::{FILETIME, HWND, RECT};
+use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTOPRIMARY};
 use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
-use windows::Win32::Media::Audio::{eConsole, eRender, IMMDeviceEnumerator, MMDeviceEnumerator};
-use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED};
+use windows::Win32::Media::Audio::{
+    eCommunications, eConsole, eMultimedia, eRender, ERole, IMMDeviceEnumerator,
+    MMDeviceEnumerator, DEVICE_STATE_ACTIVE,
+};
+use windows::Win32::System::Com::StructuredStorage::PropVariantToStringAlloc;
+use windows::Win32::System::Com::{
+    CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_ALL, COINIT_MULTITHREADED, STGM_READ,
+};
+use windows::Win32::System::DataExchange::{
+    CloseClipboard, EmptyClipboard, GetClipboardData, GetClipboardSequenceNumber, OpenClipboard,
+    SetClipboardData,
+};
+use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
 use windows::Win32::System::Registry::{
     RegCloseKey, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW, HKEY,
     HKEY_CURRENT_USER, KEY_READ, KEY_WRITE, REG_SZ,
 };
 use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
 use windows::Win32::System::Threading::GetSystemTimes;
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CAPITAL};
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetClassNameW, GetForegroundWindow, GetWindowRect, IsWindowVisible,
+};
+
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+const CF_UNICODETEXT: u32 = 13;
+const MONITORINFOF_PRIMARY: u32 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VolumeInfo {
@@ -27,6 +50,41 @@ pub struct SystemStats {
     pub ram_used_gb: f32,
     #[serde(rename = "ramTotalGb")]
     pub ram_total_gb: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatteryInfo {
+    #[serde(rename = "hasBattery")]
+    pub has_battery: bool,
+    pub percent: u8,
+    #[serde(rename = "isCharging")]
+    pub is_charging: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AudioDeviceInfo {
+    pub id: String,
+    pub name: String,
+    #[serde(rename = "isDefault")]
+    pub is_default: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClipboardEntry {
+    pub id: u64,
+    pub text: String,
+    pub timestamp: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShelfFileInfo {
+    pub name: String,
+    pub path: String,
+    #[serde(rename = "sizeBytes")]
+    pub size_bytes: u64,
+    #[serde(rename = "isDir")]
+    pub is_dir: bool,
+    pub ext: String,
 }
 
 // -----------------------------------------------------------------------------
@@ -106,7 +164,131 @@ pub fn toggle_volume_mute() -> VolumeInfo {
 }
 
 // -----------------------------------------------------------------------------
-// 2. Native Windows CPU & RAM Hardware Monitor
+// 2. Audio Output Device Enumerator & Switcher (COM IPolicyConfig)
+// -----------------------------------------------------------------------------
+
+pub fn list_audio_output_devices() -> Vec<AudioDeviceInfo> {
+    let mut result = Vec::new();
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        let enumerator: IMMDeviceEnumerator =
+            match CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) {
+                Ok(e) => e,
+                Err(_) => return result,
+            };
+
+        let default_id = enumerator
+            .GetDefaultAudioEndpoint(eRender, eConsole)
+            .ok()
+            .and_then(|d| d.GetId().ok())
+            .map(|pw| {
+                let s = pw.to_string().unwrap_or_default();
+                CoTaskMemFree(Some(pw.0 as *const _));
+                s
+            })
+            .unwrap_or_default();
+
+        let collection = match enumerator.EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE) {
+            Ok(c) => c,
+            Err(_) => return result,
+        };
+
+        let count = collection.GetCount().unwrap_or(0);
+        for i in 0..count {
+            if let Ok(device) = collection.Item(i) {
+                let id = device
+                    .GetId()
+                    .ok()
+                    .map(|pw| {
+                        let s = pw.to_string().unwrap_or_default();
+                        CoTaskMemFree(Some(pw.0 as *const _));
+                        s
+                    })
+                    .unwrap_or_default();
+
+                let name = device
+                    .OpenPropertyStore(STGM_READ)
+                    .ok()
+                    .and_then(|store| store.GetValue(&PKEY_Device_FriendlyName).ok())
+                    .and_then(|prop| PropVariantToStringAlloc(&prop).ok())
+                    .map(|pw| {
+                        let s = pw.to_string().unwrap_or_default();
+                        CoTaskMemFree(Some(pw.0 as *const _));
+                        s
+                    })
+                    .unwrap_or_else(|| format!("Audio Device {}", i + 1));
+
+                if !id.is_empty() {
+                    result.push(AudioDeviceInfo {
+                        is_default: id == default_id,
+                        id,
+                        name,
+                    });
+                }
+            }
+        }
+    }
+    result
+}
+
+// Undocumented standard Windows COM interface for switching default audio output device
+const CLSID_POLICY_CONFIG_CLIENT: GUID = GUID::from_u128(0x870af99c_171d_4f9e_af0d_e63df40c2bc9);
+const IID_IPOLICY_CONFIG: GUID = GUID::from_u128(0xf8679f50_850a_41cf_9c72_430f290290c8);
+
+#[repr(C)]
+struct IPolicyConfigVtbl {
+    query_interface: unsafe extern "system" fn(*mut std::ffi::c_void, *const GUID, *mut *mut std::ffi::c_void) -> i32,
+    add_ref: unsafe extern "system" fn(*mut std::ffi::c_void) -> u32,
+    release: unsafe extern "system" fn(*mut std::ffi::c_void) -> u32,
+    _pad: [*const std::ffi::c_void; 10],
+    set_default_endpoint: unsafe extern "system" fn(*mut std::ffi::c_void, PCWSTR, ERole) -> i32,
+}
+
+#[repr(C)]
+struct IPolicyConfigRaw {
+    vtbl: *const IPolicyConfigVtbl,
+}
+
+pub fn set_default_audio_device(device_id: &str) -> Result<bool, String> {
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        let mut raw_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+
+        // Call CoCreateInstance via windows::Win32::System::Com::CoCreateInstance using IUnknown then QI
+        let unk: windows::core::IUnknown =
+            CoCreateInstance(&CLSID_POLICY_CONFIG_CLIENT, None, CLSCTX_ALL)
+                .map_err(|e| format!("PolicyConfig init failed: {}", e))?;
+
+        let hr = (windows::core::Interface::vtable(&unk).QueryInterface)(
+            windows::core::Interface::as_raw(&unk),
+            &IID_IPOLICY_CONFIG,
+            &mut raw_ptr,
+        );
+
+        if hr.is_err() || raw_ptr.is_null() {
+            return Err("Failed to query IPolicyConfig interface".to_string());
+        }
+
+        let cfg = raw_ptr as *mut IPolicyConfigRaw;
+        let id_wide = HSTRING::from(device_id);
+        let set_fn = (*(*cfg).vtbl).set_default_endpoint;
+
+        let r1 = set_fn(raw_ptr, PCWSTR(id_wide.as_ptr()), eConsole);
+        let _ = set_fn(raw_ptr, PCWSTR(id_wide.as_ptr()), eMultimedia);
+        let _ = set_fn(raw_ptr, PCWSTR(id_wide.as_ptr()), eCommunications);
+
+        ((*(*cfg).vtbl).release)(raw_ptr);
+
+        if r1 >= 0 {
+            Ok(true)
+        } else {
+            Err(format!("SetDefaultEndpoint returned HRESULT 0x{:X}", r1))
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// 3. Native Windows CPU & RAM Hardware Monitor
 // -----------------------------------------------------------------------------
 
 fn filetime_to_u64(ft: FILETIME) -> u64 {
@@ -210,7 +392,202 @@ impl SystemMonitor {
 }
 
 // -----------------------------------------------------------------------------
-// 3. Auto-Start on Windows Boot (HKCU\Software\Microsoft\Windows\CurrentVersion\Run)
+// 4. Battery Status, Caps Lock & Fullscreen Detection
+// -----------------------------------------------------------------------------
+
+pub fn get_battery_info() -> BatteryInfo {
+    let mut status = SYSTEM_POWER_STATUS::default();
+    unsafe {
+        if GetSystemPowerStatus(&mut status).is_ok() {
+            let has_battery = status.BatteryFlag != 128 && status.BatteryFlag != 255;
+            let percent = if status.BatteryLifePercent <= 100 {
+                status.BatteryLifePercent
+            } else {
+                100
+            };
+            let is_charging = status.ACLineStatus == 1;
+            return BatteryInfo {
+                has_battery,
+                percent,
+                is_charging,
+            };
+        }
+    }
+    BatteryInfo {
+        has_battery: false,
+        percent: 100,
+        is_charging: true,
+    }
+}
+
+pub fn is_caps_lock_on() -> bool {
+    unsafe { (GetKeyState(VK_CAPITAL.0 as i32) & 1) != 0 }
+}
+
+pub fn is_other_app_fullscreen(own_hwnds: &[isize]) -> bool {
+    unsafe {
+        let fg = GetForegroundWindow();
+        if fg.0.is_null() {
+            return false;
+        }
+        let fg_val = fg.0 as isize;
+        if own_hwnds.contains(&fg_val) {
+            return false;
+        }
+        if !IsWindowVisible(fg).as_bool() {
+            return false;
+        }
+
+        // Exclude Windows desktop shell windows
+        let mut class_buf = [0u16; 128];
+        let len = GetClassNameW(fg, &mut class_buf);
+        if len > 0 {
+            let class_name = String::from_utf16_lossy(&class_buf[..len as usize]);
+            if matches!(
+                class_name.as_str(),
+                "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd" | "Windows.UI.Core.CoreWindow"
+            ) {
+                return false;
+            }
+        }
+
+        let mut win_rect = RECT::default();
+        if GetWindowRect(fg, &mut win_rect).is_err() {
+            return false;
+        }
+
+        let monitor = MonitorFromWindow(fg, MONITOR_DEFAULTTOPRIMARY);
+        let mut mon_info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if !GetMonitorInfoW(monitor, &mut mon_info).as_bool() {
+            return false;
+        }
+
+        // Only hide when fullscreen is on the primary monitor (where the Island lives)
+        if (mon_info.dwFlags & MONITORINFOF_PRIMARY) == 0 {
+            return false;
+        }
+
+        let m = mon_info.rcMonitor;
+        win_rect.left <= m.left
+            && win_rect.top <= m.top
+            && win_rect.right >= m.right
+            && win_rect.bottom >= m.bottom
+    }
+}
+
+// -----------------------------------------------------------------------------
+// 5. Local Clipboard History Helpers (Zero-Overhead Sequence Check)
+// -----------------------------------------------------------------------------
+
+pub fn read_clipboard_text_if_changed(last_seq: &mut u32) -> Option<String> {
+    unsafe {
+        let seq = GetClipboardSequenceNumber();
+        if seq == 0 || seq == *last_seq {
+            return None;
+        }
+        *last_seq = seq;
+
+        if OpenClipboard(HWND::default()).is_err() {
+            return None;
+        }
+
+        let mut extracted: Option<String> = None;
+        if let Ok(handle) = GetClipboardData(CF_UNICODETEXT) {
+            let hmem = windows::Win32::Foundation::HGLOBAL(handle.0);
+            let ptr = GlobalLock(hmem) as *const u16;
+            if !ptr.is_null() {
+                let mut len = 0usize;
+                while len < 4000 && *ptr.add(len) != 0 {
+                    len += 1;
+                }
+                let slice = std::slice::from_raw_parts(ptr, len);
+                let text = String::from_utf16_lossy(slice).trim().to_string();
+                if !text.is_empty() {
+                    extracted = Some(text);
+                }
+                let _ = GlobalUnlock(hmem);
+            }
+        }
+        let _ = CloseClipboard();
+        extracted
+    }
+}
+
+pub fn write_clipboard_text(text: &str) -> bool {
+    unsafe {
+        if OpenClipboard(HWND::default()).is_err() {
+            return false;
+        }
+        let _ = EmptyClipboard();
+
+        let mut wide: Vec<u16> = text.encode_utf16().collect();
+        wide.push(0);
+        let bytes = wide.len() * std::mem::size_of::<u16>();
+
+        let ok = if let Ok(hmem) = GlobalAlloc(GMEM_MOVEABLE, bytes) {
+            let dst = GlobalLock(hmem) as *mut u16;
+            if !dst.is_null() {
+                std::ptr::copy_nonoverlapping(wide.as_ptr(), dst, wide.len());
+                let _ = GlobalUnlock(hmem);
+                SetClipboardData(CF_UNICODETEXT, windows::Win32::Foundation::HANDLE(hmem.0)).is_ok()
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        let _ = CloseClipboard();
+        ok
+    }
+}
+
+// -----------------------------------------------------------------------------
+// 6. File Drop Shelf Helpers (Open / Reveal in Explorer)
+// -----------------------------------------------------------------------------
+
+pub fn build_shelf_file_info(path: &std::path::Path) -> ShelfFileInfo {
+    let name = path
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.to_string_lossy().to_string());
+    let ext = path
+        .extension()
+        .map(|s| s.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    let meta = std::fs::metadata(path).ok();
+    let is_dir = meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
+    let size_bytes = meta.as_ref().map(|m| if m.is_dir() { 0 } else { m.len() }).unwrap_or(0);
+
+    ShelfFileInfo {
+        name,
+        path: path.to_string_lossy().to_string(),
+        size_bytes,
+        is_dir,
+        ext,
+    }
+}
+
+pub fn open_file_path(path: &str) -> bool {
+    std::process::Command::new("cmd")
+        .args(["/C", "start", "", path])
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .is_ok()
+}
+
+pub fn reveal_file_in_explorer(path: &str) -> bool {
+    std::process::Command::new("explorer")
+        .arg(format!("/select,{}", path))
+        .spawn()
+        .is_ok()
+}
+
+// -----------------------------------------------------------------------------
+// 7. Auto-Start on Windows Boot (HKCU\Software\Microsoft\Windows\CurrentVersion\Run)
 // -----------------------------------------------------------------------------
 
 const RUN_SUBKEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
@@ -273,7 +650,7 @@ pub fn set_autostart_enabled(enabled: bool) -> Result<bool, String> {
                 .map_err(|e| format!("Failed to locate executable: {}", e))?;
             let quoted_path = format!("\"{}\"", exe_path.to_string_lossy());
             let mut wide: Vec<u16> = quoted_path.encode_utf16().collect();
-            wide.push(0); // null terminator
+            wide.push(0);
 
             let byte_slice = std::slice::from_raw_parts(
                 wide.as_ptr() as *const u8,

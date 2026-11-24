@@ -10,6 +10,37 @@ export interface SystemStats {
   ramTotalGb: number;
 }
 
+export interface BatteryInfo {
+  hasBattery: boolean;
+  percent: number;
+  isCharging: boolean;
+}
+
+export interface AudioDeviceInfo {
+  id: string;
+  name: string;
+  isDefault: boolean;
+}
+
+export interface ClipboardEntry {
+  id: number;
+  text: string;
+  timestamp: string;
+}
+
+export interface ShelfFileInfo {
+  name: string;
+  path: string;
+  sizeBytes: number;
+  isDir: boolean;
+  ext: string;
+}
+
+export interface IslandToast {
+  kind: string;
+  message: string;
+}
+
 export interface WeatherInfo {
   city: string;
   temperature: number;
