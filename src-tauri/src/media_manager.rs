@@ -6,6 +6,7 @@ use windows::Media::Control::{
     GlobalSystemMediaTransportControlsSessionPlaybackStatus,
 };
 use windows::Storage::Streams::{DataReader, IRandomAccessStreamReference};
+use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MediaTrackInfo {
@@ -54,7 +55,6 @@ fn base64_encode(input: &[u8]) -> String {
 fn extract_thumbnail_data_url(thumb_ref: &IRandomAccessStreamReference) -> Option<String> {
     let stream = thumb_ref.OpenReadAsync().ok()?.get().ok()?;
     let size = stream.Size().ok()?;
-    // Guard against oversized raw bitmaps to keep IPC instant
     if size == 0 || size > 1_500_000 {
         return None;
     }
@@ -84,11 +84,21 @@ fn extract_thumbnail_data_url(thumb_ref: &IRandomAccessStreamReference) -> Optio
     Some(format!("data:{};base64,{}", mime, base64_encode(&bytes)))
 }
 
+fn is_session_playing(session: &GlobalSystemMediaTransportControlsSession) -> bool {
+    session
+        .GetPlaybackInfo()
+        .ok()
+        .and_then(|info| info.PlaybackStatus().ok())
+        .map(|s| s == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing)
+        .unwrap_or(false)
+}
+
 pub struct MediaManager {
     manager: Option<GlobalSystemMediaTransportControlsSessionManager>,
     cached_thumb_key: String,
     cached_thumb_data: Option<String>,
     thumb_retry_count: u8,
+    empty_polls: u32,
 }
 
 impl MediaManager {
@@ -98,10 +108,14 @@ impl MediaManager {
             cached_thumb_key: String::new(),
             cached_thumb_data: None,
             thumb_retry_count: 0,
+            empty_polls: 0,
         }
     }
 
     pub fn ensure_manager(&mut self) -> bool {
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        }
         if self.manager.is_some() {
             return true;
         }
@@ -114,11 +128,52 @@ impl MediaManager {
         false
     }
 
-    pub fn get_current_session(&mut self) -> Option<GlobalSystemMediaTransportControlsSession> {
+    /// Picks the best active media session:
+    /// 1. Any session actively Playing (even if Windows GetCurrentSession points to a paused app)
+    /// 2. Windows GetCurrentSession()
+    /// 3. First available session in GetSessions()
+    pub fn get_best_session(&mut self) -> Option<GlobalSystemMediaTransportControlsSession> {
         if !self.ensure_manager() {
             return None;
         }
-        self.manager.as_ref()?.GetCurrentSession().ok()
+
+        let mgr = self.manager.as_ref()?;
+        let mut fallback_first: Option<GlobalSystemMediaTransportControlsSession> = None;
+
+        if let Ok(sessions) = mgr.GetSessions() {
+            let count = sessions.Size().unwrap_or(0);
+            for i in 0..count {
+                if let Ok(s) = sessions.GetAt(i) {
+                    if is_session_playing(&s) {
+                        self.empty_polls = 0;
+                        return Some(s);
+                    }
+                    if fallback_first.is_none() {
+                        fallback_first = Some(s);
+                    }
+                }
+            }
+        }
+
+        if let Ok(current) = mgr.GetCurrentSession() {
+            self.empty_polls = 0;
+            return Some(current);
+        }
+
+        if fallback_first.is_some() {
+            self.empty_polls = 0;
+            return fallback_first;
+        }
+
+        // Auto-reconnect SMTC manager after ~4s of no sessions (handles post-boot shell readiness)
+        self.empty_polls += 1;
+        if self.empty_polls >= 10 {
+            self.empty_polls = 0;
+            self.manager = None;
+            self.cached_thumb_key.clear();
+            self.cached_thumb_data = None;
+        }
+        None
     }
 
     pub fn get_cached_thumbnail(&self) -> Option<String> {
@@ -126,7 +181,7 @@ impl MediaManager {
     }
 
     pub fn get_current_track_info(&mut self) -> Option<MediaTrackInfo> {
-        let session = self.get_current_session()?;
+        let session = self.get_best_session()?;
         let app_id = session.SourceAppUserModelId().unwrap_or_default().to_string();
 
         let source_app = if app_id.to_lowercase().contains("chrome") {
@@ -144,11 +199,22 @@ impl MediaManager {
         };
 
         let media_props = session.TryGetMediaPropertiesAsync().ok().and_then(|op| op.get().ok());
-        let title = media_props.as_ref().and_then(|p| p.Title().ok()).map(|s| s.to_string()).unwrap_or_default();
-        let artist = media_props.as_ref().and_then(|p| p.Artist().ok()).map(|s| s.to_string()).unwrap_or_default();
-        let album = media_props.as_ref().and_then(|p| p.AlbumTitle().ok()).map(|s| s.to_string()).unwrap_or_default();
+        let title = media_props
+            .as_ref()
+            .and_then(|p| p.Title().ok())
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        let artist = media_props
+            .as_ref()
+            .and_then(|p| p.Artist().ok())
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        let album = media_props
+            .as_ref()
+            .and_then(|p| p.AlbumTitle().ok())
+            .map(|s| s.to_string())
+            .unwrap_or_default();
 
-        // Extract and cache album cover art ONCE per track (with at most 2 retries if delayed)
         let thumb_key = format!("{}|{}", title, artist);
         if thumb_key != self.cached_thumb_key {
             self.cached_thumb_key = thumb_key.clone();
@@ -157,7 +223,7 @@ impl MediaManager {
                 .as_ref()
                 .and_then(|p| p.Thumbnail().ok())
                 .and_then(|t| extract_thumbnail_data_url(&t));
-        } else if self.cached_thumb_data.is_none() && !title.is_empty() && self.thumb_retry_count < 2 {
+        } else if self.cached_thumb_data.is_none() && !title.is_empty() && self.thumb_retry_count < 3 {
             self.thumb_retry_count += 1;
             if let Some(data) = media_props
                 .as_ref()
@@ -168,12 +234,7 @@ impl MediaManager {
             }
         }
 
-        let is_playing = session
-            .GetPlaybackInfo()
-            .ok()
-            .and_then(|info| info.PlaybackStatus().ok())
-            .map(|s| s == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing)
-            .unwrap_or(false);
+        let is_playing = is_session_playing(&session);
 
         let timeline = session.GetTimelineProperties().ok();
         let (position_sec, duration_sec) = if let Some(t) = timeline {
@@ -217,7 +278,7 @@ impl MediaManager {
     }
 
     pub fn toggle_play_pause(&mut self) -> bool {
-        if let Some(session) = self.get_current_session() {
+        if let Some(session) = self.get_best_session() {
             if let Ok(op) = session.TryTogglePlayPauseAsync() {
                 return op.get().unwrap_or(false);
             }
@@ -226,7 +287,7 @@ impl MediaManager {
     }
 
     pub fn skip_next(&mut self) -> bool {
-        if let Some(session) = self.get_current_session() {
+        if let Some(session) = self.get_best_session() {
             if let Ok(op) = session.TrySkipNextAsync() {
                 return op.get().unwrap_or(false);
             }
@@ -235,7 +296,7 @@ impl MediaManager {
     }
 
     pub fn skip_prev(&mut self) -> bool {
-        if let Some(session) = self.get_current_session() {
+        if let Some(session) = self.get_best_session() {
             if let Ok(op) = session.TrySkipPreviousAsync() {
                 return op.get().unwrap_or(false);
             }
@@ -244,7 +305,7 @@ impl MediaManager {
     }
 
     pub fn seek_position(&mut self, position_sec: u64) -> bool {
-        if let Some(session) = self.get_current_session() {
+        if let Some(session) = self.get_best_session() {
             let requested_time = TimeSpan {
                 Duration: (position_sec as i64) * 10_000_000,
             };

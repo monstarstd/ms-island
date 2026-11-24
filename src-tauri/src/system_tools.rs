@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::os::windows::process::CommandExt;
 use windows::core::{GUID, HSTRING, PCWSTR};
 use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
-use windows::Win32::Foundation::{FILETIME, HWND, RECT};
+use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS, FILETIME, HWND, RECT};
 use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTOPRIMARY};
 use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
 use windows::Win32::Media::Audio::{
@@ -24,7 +24,7 @@ use windows::Win32::System::Registry::{
     HKEY_CURRENT_USER, KEY_READ, KEY_WRITE, REG_SZ,
 };
 use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
-use windows::Win32::System::Threading::GetSystemTimes;
+use windows::Win32::System::Threading::{CreateMutexW, GetSystemTimes};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CAPITAL};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetClassNameW, GetForegroundWindow, GetWindowRect, IsWindowVisible,
@@ -702,11 +702,27 @@ pub fn reveal_file_in_explorer(path: &str) -> bool {
 }
 
 // -----------------------------------------------------------------------------
-// 7. Auto-Start on Windows Boot (HKCU\Software\Microsoft\Windows\CurrentVersion\Run)
+// 7. Single-Instance Guard & Instant Auto-Start on Windows Boot
 // -----------------------------------------------------------------------------
 
 const RUN_SUBKEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 const APP_REG_NAME: &str = "MSIsland";
+const STARTUP_TASK_NAME: &str = "MSIslandAutoStart";
+
+/// Ensures only one instance of MS Island runs at a time.
+/// Returns Some(handle) if this is the primary instance, or None if another instance is already running.
+pub fn acquire_single_instance_mutex() -> Option<isize> {
+    let name = HSTRING::from("Local\\MSIsland_SingleInstance_Mutex_v1");
+    unsafe {
+        if let Ok(handle) = CreateMutexW(None, false, PCWSTR(name.as_ptr())) {
+            if GetLastError() == ERROR_ALREADY_EXISTS {
+                return None;
+            }
+            return Some(handle.0 as isize);
+        }
+    }
+    Some(0)
+}
 
 pub fn is_autostart_enabled() -> bool {
     let subkey = HSTRING::from(RUN_SUBKEY);
@@ -742,6 +758,8 @@ pub fn is_autostart_enabled() -> bool {
     }
 }
 
+/// Registers both HKCU\...\Run AND an immediate Windows Task Scheduler ONLOGON task
+/// (bypasses Explorer's 60-90s Run-queue delay so MS Island launches right when desktop appears).
 pub fn set_autostart_enabled(enabled: bool) -> Result<bool, String> {
     let subkey = HSTRING::from(RUN_SUBKEY);
     let value_name = HSTRING::from(APP_REG_NAME);
@@ -772,7 +790,7 @@ pub fn set_autostart_enabled(enabled: bool) -> Result<bool, String> {
                 wide.len() * std::mem::size_of::<u16>(),
             );
 
-            RegSetValueExW(
+            let reg_res = RegSetValueExW(
                 hkey,
                 PCWSTR(value_name.as_ptr()),
                 0,
@@ -781,13 +799,43 @@ pub fn set_autostart_enabled(enabled: bool) -> Result<bool, String> {
             )
             .ok()
             .map(|_| true)
-            .map_err(|e| format!("Failed to write startup entry: {}", e))
+            .map_err(|e| format!("Failed to write startup entry: {}", e));
+
+            // Also create immediate ONLOGON scheduled task (no admin required) to bypass Run-key delay
+            let _ = std::process::Command::new("schtasks")
+                .args([
+                    "/Create",
+                    "/TN",
+                    STARTUP_TASK_NAME,
+                    "/TR",
+                    &quoted_path,
+                    "/SC",
+                    "ONLOGON",
+                    "/RL",
+                    "LIMITED",
+                    "/F",
+                ])
+                .creation_flags(CREATE_NO_WINDOW)
+                .output();
+
+            reg_res
         } else {
             let _ = RegDeleteValueW(hkey, PCWSTR(value_name.as_ptr()));
+            let _ = std::process::Command::new("schtasks")
+                .args(["/Delete", "/TN", STARTUP_TASK_NAME, "/F"])
+                .creation_flags(CREATE_NO_WINDOW)
+                .output();
             Ok(false)
         };
 
         let _ = RegCloseKey(hkey);
         result
+    }
+}
+
+/// Ensures existing auto-start entries always point to the current running executable path
+pub fn sync_autostart_path_if_enabled() {
+    if is_autostart_enabled() {
+        let _ = set_autostart_enabled(true);
     }
 }

@@ -108,7 +108,22 @@ export const App: React.FC = () => {
       unlisteners = [u1, u2, u3, u4, u5];
     });
 
-    // Initial state hydration (runs once, no heavy polling!)
+    // Initial state hydration + lightweight 1200ms RAM-cache safety sync (0 WinRT calls!)
+    const syncCachedState = async () => {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        const track = await invoke<MediaTrack | null>("get_current_track");
+        if (!isMounted) return;
+        if (track && track.title) {
+          await applyTrackUpdate(track);
+        } else {
+          lastThumbIdRef.current = null;
+          cachedThumbDataRef.current = undefined;
+          setMedia((prev) => (prev.title ? EMPTY_TRACK : prev));
+        }
+      } catch {}
+    };
+
     import("@tauri-apps/api/core").then(async ({ invoke }) => {
       try {
         const [track, fullLyrics, isOpen] = await Promise.all([
@@ -117,7 +132,7 @@ export const App: React.FC = () => {
           invoke<boolean>("is_lyrics_window_open"),
         ]);
         if (isMounted) {
-          if (track) await applyTrackUpdate(track);
+          if (track && track.title) await applyTrackUpdate(track);
           if (fullLyrics) setLyricsText(fullLyrics);
           setIsLyricsOpen(isOpen);
         }
@@ -126,8 +141,11 @@ export const App: React.FC = () => {
       }
     });
 
+    const safetyPoll = setInterval(syncCachedState, 1200);
+
     return () => {
       isMounted = false;
+      clearInterval(safetyPoll);
       unlisteners.forEach((fn) => fn());
     };
   }, []);

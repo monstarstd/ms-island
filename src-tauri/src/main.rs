@@ -483,6 +483,15 @@ fn start_window_drag(window: tauri::WebviewWindow) {
 }
 
 fn main() {
+    // 0. Single-instance guard: exit immediately if another MS Island is already running
+    let _instance_guard = match system_tools::acquire_single_instance_mutex() {
+        Some(h) => h,
+        None => return,
+    };
+
+    // Keep auto-start path & ONLOGON task synced to this executable in background
+    std::thread::spawn(system_tools::sync_autostart_path_if_enabled);
+
     let media_mgr = Arc::new(Mutex::new(MediaManager::new()));
     let cached_track = Arc::new(Mutex::new(None::<MediaTrackInfo>));
     let cached_thumbnail = Arc::new(Mutex::new(None::<String>));
@@ -783,11 +792,109 @@ fn main() {
                 }
             }
 
-            // 3. Dedicated Background OS Thread (MTA COM)
-            let handle_bg = app_handle.clone();
+            // 3A. Dedicated SMTC Media & Lyrics Thread (Isolated MTA COM — NEVER blocked by Clipboard!)
+            let handle_media = app_handle.clone();
             std::thread::spawn(move || {
+                unsafe {
+                    let _ = windows::Win32::System::Com::CoInitializeEx(
+                        None,
+                        windows::Win32::System::Com::COINIT_MULTITHREADED,
+                    );
+                }
+
                 let mut current_lyrics_title = String::new();
                 let mut had_active_track = false;
+
+                loop {
+                    let (track_opt, thumb_opt) = {
+                        let mut mgr = lock_safe(&media_mgr_clone);
+                        let t = mgr.get_current_track_info();
+                        let thumb = if t.is_some() {
+                            mgr.get_cached_thumbnail()
+                        } else {
+                            None
+                        };
+                        (t, thumb)
+                    };
+
+                    *lock_safe(&cached_track_clone) = track_opt.clone();
+                    *lock_safe(&cached_thumb_clone) = thumb_opt;
+
+                    match track_opt {
+                        Some(track) if !track.title.is_empty() => {
+                            had_active_track = true;
+                            let _ = handle_media.emit("media-updated", &track);
+
+                            if track.title != current_lyrics_title {
+                                current_lyrics_title = track.title.clone();
+                                let title_for_fetch = track.title.clone();
+                                let artist_for_fetch = track.artist.clone();
+                                let duration_sec = track.duration_sec;
+
+                                let handle_inner = handle_media.clone();
+                                let cached_inner = cached_lyrics_clone.clone();
+
+                                *lock_safe(&cached_inner) = String::from("Searching for lyrics...");
+                                let _ =
+                                    handle_inner.emit("lyrics-updated", "Searching for lyrics...");
+
+                                tauri::async_runtime::spawn(async move {
+                                    let lyrics_text = match lyrics::fetch_full_lyrics(
+                                        &title_for_fetch,
+                                        &artist_for_fetch,
+                                        duration_sec,
+                                    )
+                                    .await
+                                    {
+                                        Some(full) => full,
+                                        None => String::from(
+                                            "No lyrics found online for this track. Use the search bar above to search manually.",
+                                        ),
+                                    };
+
+                                    *lock_safe(&cached_inner) = lyrics_text.clone();
+                                    let _ = handle_inner.emit("lyrics-updated", &lyrics_text);
+                                });
+                            }
+                        }
+                        _ => {
+                            if had_active_track {
+                                had_active_track = false;
+                                current_lyrics_title.clear();
+                                *lock_safe(&cached_lyrics_clone) = String::new();
+                                let _ = handle_media.emit("media-cleared", ());
+                                let _ = handle_media.emit("lyrics-updated", "");
+                            }
+                        }
+                    }
+
+                    std::thread::sleep(Duration::from_millis(400));
+                }
+            });
+
+            // 3B. Dedicated System, Clipboard (Win+V), Battery & Fullscreen Thread (Isolated MTA COM)
+            let handle_bg = app_handle.clone();
+            std::thread::spawn(move || {
+                unsafe {
+                    let _ = windows::Win32::System::Com::CoInitializeEx(
+                        None,
+                        windows::Win32::System::Com::COINIT_MULTITHREADED,
+                    );
+                }
+
+                // Post-boot safety re-center once Windows desktop settles
+                let h_settle = handle_bg.clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    let h_ui = h_settle.clone();
+                    let _ = h_settle.run_on_main_thread(move || {
+                        center_island_on_primary_monitor(&h_ui);
+                        if let Some(w) = h_ui.get_webview_window("island") {
+                            let _ = w.show();
+                        }
+                    });
+                });
+
                 let mut last_clip_seq: u32 = 0;
                 let mut clip_id_counter: u64 = 1;
                 let mut last_caps = system_tools::is_caps_lock_on();
@@ -887,7 +994,8 @@ fn main() {
                         }
                         last_battery = bat_now;
 
-                        if auto_hide_clone.load(Ordering::Relaxed) {
+                        // Wait 3s after boot before enabling fullscreen hide so Windows login transitions never hide it
+                        if tick_count > 6 && auto_hide_clone.load(Ordering::Relaxed) {
                             let is_fs = system_tools::is_other_app_fullscreen(&own_hwnds);
                             if is_fs && !hidden_by_fullscreen {
                                 hidden_by_fullscreen = true;
@@ -914,70 +1022,6 @@ fn main() {
                                     let _ = w.show();
                                 }
                             });
-                        }
-                    }
-
-                    // D. Media SMTC & Cached Thumbnail Update (clears cleanly when player closes!)
-                    let (track_opt, thumb_opt) = {
-                        let mut mgr = lock_safe(&media_mgr_clone);
-                        let t = mgr.get_current_track_info();
-                        let thumb = if t.is_some() {
-                            mgr.get_cached_thumbnail()
-                        } else {
-                            None
-                        };
-                        (t, thumb)
-                    };
-
-                    *lock_safe(&cached_track_clone) = track_opt.clone();
-                    *lock_safe(&cached_thumb_clone) = thumb_opt;
-
-                    match track_opt {
-                        Some(track) if !track.title.is_empty() => {
-                            had_active_track = true;
-                            let _ = handle_bg.emit("media-updated", &track);
-
-                            if track.title != current_lyrics_title {
-                                current_lyrics_title = track.title.clone();
-                                let title_for_fetch = track.title.clone();
-                                let artist_for_fetch = track.artist.clone();
-                                let duration_sec = track.duration_sec;
-
-                                let handle_inner = handle_bg.clone();
-                                let cached_inner = cached_lyrics_clone.clone();
-
-                                *lock_safe(&cached_inner) = String::from("Searching for lyrics...");
-                                let _ =
-                                    handle_inner.emit("lyrics-updated", "Searching for lyrics...");
-
-                                tauri::async_runtime::spawn(async move {
-                                    let lyrics_text = match lyrics::fetch_full_lyrics(
-                                        &title_for_fetch,
-                                        &artist_for_fetch,
-                                        duration_sec,
-                                    )
-                                    .await
-                                    {
-                                        Some(full) => full,
-                                        None => String::from(
-                                            "No lyrics found online for this track. Use the search bar above to search manually.",
-                                        ),
-                                    };
-
-                                    *lock_safe(&cached_inner) = lyrics_text.clone();
-                                    let _ = handle_inner.emit("lyrics-updated", &lyrics_text);
-                                });
-                            }
-                        }
-                        _ => {
-                            // Clear stale track & lyrics when browser/Spotify session closes
-                            if had_active_track {
-                                had_active_track = false;
-                                current_lyrics_title.clear();
-                                *lock_safe(&cached_lyrics_clone) = String::new();
-                                let _ = handle_bg.emit("media-cleared", ());
-                                let _ = handle_bg.emit("lyrics-updated", "");
-                            }
                         }
                     }
                 }
