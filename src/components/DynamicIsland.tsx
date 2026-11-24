@@ -84,6 +84,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   const [isHovered, setIsHovered] = useState(false);
   const [activeTab, setActiveTab] = useState<TabType>("music");
   const hoverTimeoutRef = useRef<number | null>(null);
+  const hoverEnterTimeoutRef = useRef<number | null>(null);
   const isTauri = typeof window !== "undefined" && !!(window as any).__TAURI_INTERNALS__;
   const isLight = theme === "light";
 
@@ -442,10 +443,19 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
       clearTimeout(hoverTimeoutRef.current);
       hoverTimeoutRef.current = null;
     }
-    setIsHovered(true);
+    if (!isHovered && !hoverEnterTimeoutRef.current) {
+      hoverEnterTimeoutRef.current = window.setTimeout(() => {
+        hoverEnterTimeoutRef.current = null;
+        setIsHovered(true);
+      }, 110);
+    }
   };
 
   const handleMouseLeave = () => {
+    if (hoverEnterTimeoutRef.current) {
+      clearTimeout(hoverEnterTimeoutRef.current);
+      hoverEnterTimeoutRef.current = null;
+    }
     hoverTimeoutRef.current = window.setTimeout(() => {
       setIsHovered(false);
       setActiveTab("music");
@@ -566,7 +576,6 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
           /* IDLE BAR: PURE 3-COLUMN GRID (NO CLOCK ICON, NO MODE ICON)*/
           /* ========================================================= */
           <div
-            data-tauri-drag-region
             className="w-full h-full grid grid-cols-[auto_1fr_auto] items-center gap-2.5 select-none"
             onMouseDown={(e) => {
               if (e.button !== 0) return;

@@ -32,9 +32,16 @@ fn get_full_lyrics(state: State<AppState>) -> String {
 }
 
 #[tauri::command]
-fn is_lyrics_window_open(state: State<AppState>) -> bool {
-    let open_lock = state.is_lyrics_open.lock().unwrap();
-    *open_lock
+fn is_lyrics_window_open(app: AppHandle, state: State<AppState>) -> bool {
+    let actual_open = if let Some(lyrics_win) = app.get_webview_window("lyrics") {
+        let visible = lyrics_win.is_visible().unwrap_or(false);
+        let minimized = lyrics_win.is_minimized().unwrap_or(false);
+        visible && !minimized
+    } else {
+        false
+    };
+    *state.is_lyrics_open.lock().unwrap() = actual_open;
+    actual_open
 }
 
 #[tauri::command]
@@ -47,21 +54,61 @@ async fn search_lyrics_manual(state: State<'_, AppState>, query: String) -> Resu
     }
 }
 
+fn ensure_lyrics_on_screen(app: &AppHandle, lyrics_win: &tauri::WebviewWindow) {
+    if let Ok(Some(monitor)) = app.primary_monitor() {
+        let screen_size = monitor.size();
+        let screen_w = screen_size.width as i32;
+        let screen_h = screen_size.height as i32;
+        let win_size = lyrics_win.outer_size().ok();
+        let win_w = win_size.map(|s| s.width as i32).unwrap_or(420);
+        let win_h = win_size.map(|s| s.height as i32).unwrap_or(560);
+
+        let needs_reposition = match lyrics_win.outer_position() {
+            Ok(pos) => {
+                pos.x < -win_w + 80
+                    || pos.x > screen_w - 80
+                    || pos.y < 0
+                    || pos.y > screen_h - 80
+            }
+            Err(_) => true,
+        };
+
+        if needs_reposition {
+            let x = (screen_w - win_w - 40).max(20);
+            let y = ((screen_h - win_h) / 2).max(40);
+            let _ = lyrics_win.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
+                x,
+                y,
+            }));
+        }
+    }
+}
+
 #[tauri::command]
 fn toggle_lyrics_window(app: AppHandle, state: State<AppState>) -> bool {
     let mut open_lock = state.is_lyrics_open.lock().unwrap();
-    let new_state = !*open_lock;
-    *open_lock = new_state;
 
     if let Some(lyrics_win) = app.get_webview_window("lyrics") {
-        if new_state {
+        let currently_visible = lyrics_win.is_visible().unwrap_or(false);
+        let currently_minimized = lyrics_win.is_minimized().unwrap_or(false);
+        let should_show = !currently_visible || currently_minimized;
+
+        if should_show {
+            ensure_lyrics_on_screen(&app, &lyrics_win);
+            let _ = lyrics_win.unminimize();
             let _ = lyrics_win.show();
+            let _ = lyrics_win.set_always_on_top(true);
             let _ = lyrics_win.set_focus();
+            *open_lock = true;
         } else {
             let _ = lyrics_win.hide();
+            *open_lock = false;
         }
+    } else {
+        *open_lock = false;
     }
 
+    let new_state = *open_lock;
     let _ = app.emit("lyrics-visibility-changed", new_state);
     new_state
 }
@@ -227,6 +274,20 @@ fn main() {
                         y: lyrics_y,
                     }));
                     let _ = lyrics_win.hide();
+
+                    // Never allow OS/Alt+F4/taskbar close to destroy the lyrics window — hide it instead!
+                    let lyrics_win_clone = lyrics_win.clone();
+                    let app_handle_close = app_handle.clone();
+                    lyrics_win.on_window_event(move |event| {
+                        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                            api.prevent_close();
+                            let _ = lyrics_win_clone.hide();
+                            if let Some(st) = app_handle_close.try_state::<AppState>() {
+                                *st.is_lyrics_open.lock().unwrap() = false;
+                            }
+                            let _ = app_handle_close.emit("lyrics-visibility-changed", false);
+                        }
+                    });
                 }
             }
 

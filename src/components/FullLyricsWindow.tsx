@@ -74,7 +74,6 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
     >
       {/* Draggable Native Header */}
       <div 
-        data-tauri-drag-region
         className={`flex items-center justify-between px-4 py-2.5 border-b cursor-move transition-colors ${
           isLight 
             ? "bg-zinc-100/90 border-zinc-300" 
@@ -86,13 +85,13 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
           onStartDrag();
         }}
       >
-        <div data-tauri-drag-region className="flex items-center gap-2.5 min-w-0 pr-2">
+        <div className="flex items-center gap-2.5 min-w-0 pr-2">
           <FileText className={`w-4 h-4 flex-shrink-0 ${isLight ? "text-zinc-600" : "text-zinc-400"}`} />
-          <div data-tauri-drag-region className="min-w-0">
-            <h3 data-tauri-drag-region className="text-xs font-semibold truncate leading-tight">
+          <div className="min-w-0">
+            <h3 className="text-xs font-semibold truncate leading-tight">
               {media.title || "Full Lyrics"}
             </h3>
-            <p data-tauri-drag-region className={`text-[10px] truncate leading-tight mt-0.5 ${isLight ? "text-zinc-500" : "text-zinc-400"}`}>
+            <p className={`text-[10px] truncate leading-tight mt-0.5 ${isLight ? "text-zinc-500" : "text-zinc-400"}`}>
               {media.artist || "YouTube / Media Player"}
             </p>
           </div>
@@ -224,7 +223,6 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
 
       {/* Footer (also draggable for convenience) */}
       <div
-        data-tauri-drag-region
         onMouseDown={(e) => {
           if (e.button !== 0) return;
           onStartDrag();
@@ -233,8 +231,8 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
           isLight ? "bg-zinc-100 border-zinc-300 text-zinc-500" : "bg-zinc-900/80 border-zinc-800 text-zinc-500"
         }`}
       >
-        <span data-tauri-drag-region>Dual Engine: LRCLIB &amp; Genius</span>
-        <span data-tauri-drag-region>Drag header to move window anywhere</span>
+        <span>Dual Engine: LRCLIB &amp; Genius</span>
+        <span>Drag header to move window anywhere</span>
       </div>
     </div>
   );

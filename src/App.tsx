@@ -16,7 +16,11 @@ const EMPTY_TRACK: MediaTrack = {
 };
 
 export const App: React.FC = () => {
-  const [windowMode, setWindowMode] = useState<string>("island");
+  const [windowMode, setWindowMode] = useState<string>(() => {
+    const queryParams = new URLSearchParams(window.location.search);
+    const hashMode = window.location.hash.replace("#", "");
+    return queryParams.get("mode") || hashMode || "island";
+  });
   const [media, setMedia] = useState<MediaTrack>(EMPTY_TRACK);
   const [lyricsText, setLyricsText] = useState<string>("");
   const [isLyricsOpen, setIsLyricsOpen] = useState<boolean>(false);

@@ -25,9 +25,10 @@
       {
         "title": "Lyrics - MS Island",
         "label": "lyrics",
-        "url": "index.html",
+        "url": "index.html?mode=lyrics",
         "width": 420,
         "height": 560,
+        "visible": false,
         "resizable": true,
         "decorations": false,
         "transparent": true,
