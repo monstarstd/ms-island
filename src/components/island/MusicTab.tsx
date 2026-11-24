@@ -155,7 +155,8 @@ export const MusicTab: React.FC<MusicTabProps> = React.memo(
             </button>
             <button
               onClick={() => onSeek(Math.max(0, media.positionSec - 10))}
-              className={`p-1.5 rounded-md transition-all active:scale-[0.92] ${focusRing} ${mutedText} hover:text-current`}
+              disabled={!media.title || media.durationSec <= 0}
+              className={`p-1.5 rounded-md transition-all active:scale-[0.92] disabled:opacity-35 ${focusRing} ${mutedText} hover:text-current`}
               title="Rewind 10s"
             >
               <RotateCcw className="w-3 h-3" />
@@ -173,7 +174,8 @@ export const MusicTab: React.FC<MusicTabProps> = React.memo(
             </button>
             <button
               onClick={() => onSeek(Math.min(media.durationSec, media.positionSec + 10))}
-              className={`p-1.5 rounded-md transition-all active:scale-[0.92] ${focusRing} ${mutedText} hover:text-current`}
+              disabled={!media.title || media.durationSec <= 0}
+              className={`p-1.5 rounded-md transition-all active:scale-[0.92] disabled:opacity-35 ${focusRing} ${mutedText} hover:text-current`}
               title="Forward 10s"
             >
               <RotateCw className="w-3 h-3" />

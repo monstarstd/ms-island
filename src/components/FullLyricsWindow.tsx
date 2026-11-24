@@ -18,7 +18,7 @@ import {
 } from "lucide-react";
 import { MediaTrack } from "../types/media";
 import { ThemeMode } from "../types/theme";
-import { formatTime } from "./island/helpers";
+import { copyTextReliable, formatTime } from "./island/helpers";
 
 interface LyricsSuggestion {
   id: number;
@@ -199,7 +199,7 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
   const handleCopyLyrics = () => {
     const textToCopy = customLyrics || lyricsText;
     if (textToCopy) {
-      navigator.clipboard.writeText(textToCopy);
+      copyTextReliable(textToCopy);
       setCopiedLyrics(true);
       setTimeout(() => setCopiedLyrics(false), 1800);
     }
@@ -212,7 +212,7 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
       activeArtist && activeTitle
         ? `${activeArtist} - ${activeTitle}`
         : activeTitle || "Unknown Track";
-    navigator.clipboard.writeText(trackInfo);
+    copyTextReliable(trackInfo);
     setCopiedTrack(true);
     setTimeout(() => setCopiedTrack(false), 1800);
   };

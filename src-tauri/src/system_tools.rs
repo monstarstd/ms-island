@@ -29,9 +29,10 @@ use windows::Win32::System::Threading::{
     EVENT_MODIFY_STATE, INFINITE,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CAPITAL};
+use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::{
     GetClassNameW, GetCursorPos, GetForegroundWindow, GetWindowLongW, GetWindowRect,
-    IsWindowVisible, GWL_STYLE, WS_CAPTION, WS_THICKFRAME,
+    IsWindowVisible, GWL_STYLE, SW_SHOWNORMAL, WS_CAPTION, WS_THICKFRAME,
 };
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -742,15 +743,49 @@ pub fn build_shelf_file_info(path: &std::path::Path) -> ShelfFileInfo {
     }
 }
 
+#[link(name = "winmm")]
+extern "system" {
+    fn PlaySoundW(psz_sound: *const u16, hmod: isize, fdw_sound: u32) -> i32;
+}
+
+#[link(name = "user32")]
+extern "system" {
+    fn MessageBeep(u_type: u32) -> i32;
+}
+
+/// Plays a reliable native Windows notification chime (bypasses WebView2 AudioContext autoplay locks)
+pub fn play_native_timer_chime() {
+    const SND_ASYNC: u32 = 0x0001;
+    const SND_NODEFAULT: u32 = 0x0002;
+    const SND_ALIAS: u32 = 0x0001_0000;
+    const MB_ICONASTERISK_VAL: u32 = 0x0000_0040;
+
+    let alias = HSTRING::from("SystemNotification");
+    unsafe {
+        let ok = PlaySoundW(alias.as_ptr(), 0, SND_ALIAS | SND_ASYNC | SND_NODEFAULT);
+        if ok == 0 {
+            let _ = MessageBeep(MB_ICONASTERISK_VAL);
+        }
+    }
+}
+
 pub fn open_file_path(path: &str) -> bool {
     if !std::path::Path::new(path).exists() {
         return false;
     }
-    std::process::Command::new("cmd")
-        .args(["/C", "start", "", path])
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn()
-        .is_ok()
+    let verb = HSTRING::from("open");
+    let wide_path = HSTRING::from(path);
+    unsafe {
+        let res = ShellExecuteW(
+            HWND::default(),
+            PCWSTR(verb.as_ptr()),
+            PCWSTR(wide_path.as_ptr()),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        );
+        (res.0 as isize) > 32
+    }
 }
 
 pub fn reveal_file_in_explorer(path: &str) -> bool {

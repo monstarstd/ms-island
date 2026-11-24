@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { Check, Clipboard, Copy, StickyNote, Trash2, X } from "lucide-react";
 import { ClipboardEntry } from "../../types/system";
-import { IslandThemeTokens } from "./helpers";
+import { copyTextReliable, IslandThemeTokens } from "./helpers";
 
 interface NotesTabProps {
   tokens: IslandThemeTokens;
@@ -37,7 +37,7 @@ export const NotesTab: React.FC<NotesTabProps> = React.memo(
 
     const handleCopyNotes = () => {
       if (!notesText) return;
-      navigator.clipboard.writeText(notesText);
+      copyTextReliable(notesText);
       setNotesCopied(true);
       setTimeout(() => setNotesCopied(false), 1600);
     };

@@ -545,6 +545,12 @@ async fn open_shelf_file(path: String) -> Result<bool, ()> {
 }
 
 #[tauri::command]
+async fn play_timer_chime() -> Result<(), ()> {
+    let _ = tokio::task::spawn_blocking(system_tools::play_native_timer_chime).await;
+    Ok(())
+}
+
+#[tauri::command]
 async fn reveal_shelf_file(path: String) -> Result<bool, ()> {
     Ok(
         tokio::task::spawn_blocking(move || system_tools::reveal_file_in_explorer(&path))
@@ -683,6 +689,7 @@ fn main() {
             delete_clipboard_item,
             clear_clipboard_history,
             open_shelf_file,
+            play_timer_chime,
             reveal_shelf_file,
             start_file_drag_out,
             reset_island_position,

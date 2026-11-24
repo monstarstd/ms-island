@@ -6,6 +6,7 @@ import { IslandThemeTokens, WeatherIcon } from "./helpers";
 interface WeatherTabProps {
   tokens: IslandThemeTokens;
   weather: WeatherInfo | null;
+  savedCity: string;
   loading: boolean;
   error: string;
   onRefresh: () => void;
@@ -13,9 +14,9 @@ interface WeatherTabProps {
 }
 
 export const WeatherTab: React.FC<WeatherTabProps> = React.memo(
-  ({ tokens, weather, loading, error, onRefresh, onSearchCity }) => {
+  ({ tokens, weather, savedCity, loading, error, onRefresh, onSearchCity }) => {
     const [cityInput, setCityInput] = useState("");
-    const { isLight, mutedText, primaryBtnCls, focusRing } = tokens;
+    const { isLight, mutedText, primaryBtnCls, subtleBtnCls, focusRing } = tokens;
 
     const handleSubmit = (e: React.FormEvent) => {
       e.preventDefault();
@@ -66,8 +67,8 @@ export const WeatherTab: React.FC<WeatherTabProps> = React.memo(
         </div>
 
         <div className="col-span-7 flex flex-col justify-between gap-2.5">
-          <form onSubmit={handleSubmit} className="grid grid-cols-[1fr_auto] gap-1.5">
-            <div className="relative">
+          <form onSubmit={handleSubmit} className="flex items-center gap-1.5">
+            <div className="relative flex-1 min-w-0">
               <input
                 type="text"
                 value={cityInput}
@@ -83,10 +84,20 @@ export const WeatherTab: React.FC<WeatherTabProps> = React.memo(
             </div>
             <button
               type="submit"
-              className={`h-7 px-3 rounded-lg text-[10px] font-semibold transition-all ${focusRing} ${primaryBtnCls}`}
+              className={`h-7 px-2.5 rounded-lg text-[10px] font-semibold transition-all flex-shrink-0 ${focusRing} ${primaryBtnCls}`}
             >
               Set
             </button>
+            {savedCity && (
+              <button
+                type="button"
+                onClick={() => onSearchCity("")}
+                className={`h-7 px-2 rounded-lg text-[10px] font-medium border transition-all flex-shrink-0 ${focusRing} ${subtleBtnCls}`}
+                title="Reset to automatic IP location"
+              >
+                Auto
+              </button>
+            )}
           </form>
 
           <div

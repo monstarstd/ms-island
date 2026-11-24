@@ -91,6 +91,7 @@ export const ScrubBar: React.FC<ScrubBarProps> = ({
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
+      onPointerCancel={handlePointerUp}
       onPointerLeave={() => {
         if (!isDragging) setHoverRatio(null);
       }}

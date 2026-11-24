@@ -10,7 +10,7 @@ import {
   X,
 } from "lucide-react";
 import { ActiveDownloadInfo, ShelfFileInfo } from "../../types/system";
-import { formatBytes, formatSpeed, IslandThemeTokens } from "./helpers";
+import { copyTextReliable, formatBytes, formatSpeed, IslandThemeTokens } from "./helpers";
 
 interface ShelfTabProps {
   tokens: IslandThemeTokens;
@@ -43,7 +43,7 @@ export const ShelfTab: React.FC<ShelfTabProps> = React.memo(
     const { isLight, surfaceSubtle, mutedText, subtleBtnCls } = tokens;
 
     const handleCopyPath = (path: string) => {
-      navigator.clipboard.writeText(path);
+      copyTextReliable(path);
       setCopiedPath(path);
       setTimeout(() => setCopiedPath(null), 1500);
     };

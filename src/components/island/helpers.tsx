@@ -1,4 +1,5 @@
 import React from "react";
+import { invoke } from "@tauri-apps/api/core";
 import {
   Sun,
   Moon,
@@ -88,28 +89,81 @@ export function formatSpeed(bytesPerSec: number): string {
   return `${(bytesPerSec / (1024 * 1024)).toFixed(1)} MB/s`;
 }
 
-export function playSoftChime(): void {
+/** Reliable clipboard write that works even when floating WebView2 window is unfocused */
+export async function copyTextReliable(text: string): Promise<void> {
+  if (!text) return;
+  const isTauri = typeof window !== "undefined" && !!(window as any).__TAURI_INTERNALS__;
+  if (isTauri) {
+    try {
+      const ok = await invoke<boolean>("copy_clipboard_item", { id: "", text });
+      if (ok) return;
+    } catch {}
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {}
+}
+
+let sharedAudioCtx: AudioContext | null = null;
+
+/** Call during user click (e.g. Timer Start) to unlock WebView2 AudioContext early */
+export function unlockAudioContext(): void {
   try {
     const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
     if (!AudioCtx) return;
-    const ctx = new AudioCtx();
-    const now = ctx.currentTime;
+    if (!sharedAudioCtx || sharedAudioCtx.state === "closed") {
+      sharedAudioCtx = new AudioCtx();
+    }
+    if (sharedAudioCtx.state === "suspended") {
+      sharedAudioCtx.resume().catch(() => {});
+    }
+  } catch {}
+}
 
-    [523.25, 659.25, 783.99].forEach((freq, idx) => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = "sine";
-      osc.frequency.setValueAtTime(freq, now + idx * 0.14);
-      gain.gain.setValueAtTime(0.0001, now + idx * 0.14);
-      gain.gain.exponentialRampToValueAtTime(0.12, now + idx * 0.14 + 0.03);
-      gain.gain.exponentialRampToValueAtTime(0.0001, now + idx * 0.14 + 0.55);
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start(now + idx * 0.14);
-      osc.stop(now + idx * 0.14 + 0.6);
-    });
+export function playSoftChime(): void {
+  const isTauri = typeof window !== "undefined" && !!(window as any).__TAURI_INTERNALS__;
+  if (isTauri) {
+    invoke("play_timer_chime").catch(() => {});
+  }
+
+  try {
+    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioCtx) return;
+    if (!sharedAudioCtx || sharedAudioCtx.state === "closed") {
+      sharedAudioCtx = new AudioCtx();
+    }
+    const ctx = sharedAudioCtx;
+    const triggerNotes = () => {
+      const now = ctx.currentTime;
+      // Crisp 2-pulse triad chime clearly audible even over background audio
+      [
+        { freq: 587.33, offset: 0.0 },
+        { freq: 783.99, offset: 0.13 },
+        { freq: 1046.5, offset: 0.26 },
+        { freq: 783.99, offset: 0.65 },
+        { freq: 1046.5, offset: 0.78 },
+      ].forEach(({ freq, offset }) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "triangle";
+        osc.frequency.setValueAtTime(freq, now + offset);
+        gain.gain.setValueAtTime(0.0001, now + offset);
+        gain.gain.exponentialRampToValueAtTime(0.28, now + offset + 0.025);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + offset + 0.48);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(now + offset);
+        osc.stop(now + offset + 0.52);
+      });
+    };
+
+    if (ctx.state === "suspended") {
+      ctx.resume().then(triggerNotes).catch(() => {});
+    } else {
+      triggerNotes();
+    }
   } catch {
-    // Ignore if audio context unavailable
+    // Native Windows chime above already fired
   }
 }
 

@@ -199,7 +199,9 @@ export const App: React.FC = () => {
 
   // Playback Control Handlers
   const handleTogglePlayPause = async () => {
-    setMedia((prev) => ({ ...prev, isPlaying: !prev.isPlaying }));
+    if (media.title) {
+      setMedia((prev) => ({ ...prev, isPlaying: !prev.isPlaying }));
+    }
     const isTauri = !!(window as any).__TAURI_INTERNALS__;
     if (isTauri) {
       try {

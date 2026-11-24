@@ -35,6 +35,7 @@ import {
   formatSpeed,
   getIslandThemeTokens,
   playSoftChime,
+  unlockAudioContext,
 } from "./island/helpers";
 import { IdleBar } from "./island/IdleBar";
 import { ContextMenu } from "./island/ContextMenu";
@@ -153,10 +154,13 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     localStorage.setItem("ms-island-visualizer", style);
   }, []);
 
-  // 3. Smart Real-Time Clock (1 render/min when idle; 1s tick ONLY on Clock tab)
+  // 3. Smart Real-Time Clock (1 render/min when idle; instant + 1s tick ONLY on Clock tab)
   const [currentTime, setCurrentTime] = useState<Date>(() => new Date());
   const needsSecondsTick = isHovered && activeTab === "clock";
   useEffect(() => {
+    if (needsSecondsTick) {
+      setCurrentTime(new Date());
+    }
     const id = window.setInterval(() => {
       const now = new Date();
       if (needsSecondsTick) {
@@ -238,7 +242,9 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
         await invoke("switch_audio_device", { deviceId: device.id });
         await loadAudioDevices();
         showToast("audio", `Output: ${device.name}`, 2000);
-      } catch {}
+      } catch {
+        showToast("audio", "Could not switch audio device", 2200);
+      }
     },
     [isTauri, loadAudioDevices, showToast]
   );
@@ -293,17 +299,19 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     }
   };
 
-  // 6. Countdown Timer (Drift-Free Interval + Safe Clamped Adjust)
+  // 6. Countdown Timer (Wall-Clock Accurate + Native Chime + Auto-Open on Complete)
   const [timerDuration, setTimerDuration] = useState(300);
   const [timerRemaining, setTimerRemaining] = useState(300);
   const [isTimerRunning, setIsTimerRunning] = useState(false);
   const [isTimerFinished, setIsTimerFinished] = useState(false);
+  const timerEndAtRef = useRef<number>(0);
 
   useEffect(() => {
     if (!isTimerRunning) return;
     const id = window.setInterval(() => {
-      setTimerRemaining((prev) => (prev <= 1 ? 0 : prev - 1));
-    }, 1000);
+      const left = Math.max(0, Math.ceil((timerEndAtRef.current - Date.now()) / 1000));
+      setTimerRemaining((prev) => (prev === left ? prev : left));
+    }, 250);
     return () => clearInterval(id);
   }, [isTimerRunning]);
 
@@ -311,18 +319,27 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     if (isTimerRunning && timerRemaining === 0) {
       setIsTimerRunning(false);
       setIsTimerFinished(true);
+      setActiveTab("timer");
+      setIsHovered(true);
       playSoftChime();
     }
   }, [isTimerRunning, timerRemaining]);
 
   const handleStartPauseTimer = useCallback(() => {
-    if (!isTimerRunning && timerRemaining === 0) {
-      setIsTimerFinished(false);
-      setTimerRemaining(timerDuration);
+    unlockAudioContext();
+    if (!isTimerRunning) {
+      const startSec = timerRemaining === 0 ? timerDuration : timerRemaining;
+      if (timerRemaining === 0) {
+        setIsTimerFinished(false);
+        setTimerRemaining(startSec);
+      }
+      timerEndAtRef.current = Date.now() + startSec * 1000;
       setIsTimerRunning(true);
       return;
     }
-    setIsTimerRunning((r) => !r);
+    const left = Math.max(0, Math.ceil((timerEndAtRef.current - Date.now()) / 1000));
+    setTimerRemaining(left);
+    setIsTimerRunning(false);
   }, [isTimerRunning, timerRemaining, timerDuration]);
 
   const handleResetTimer = useCallback(() => {
@@ -332,6 +349,10 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   }, [timerDuration]);
 
   const handleSetPresetTimer = useCallback((seconds: number, autoStart = false) => {
+    if (autoStart) {
+      unlockAudioContext();
+      timerEndAtRef.current = Date.now() + seconds * 1000;
+    }
     setIsTimerRunning(autoStart);
     setIsTimerFinished(false);
     setTimerDuration(seconds);
@@ -345,8 +366,9 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
         const next = diff < 0 ? Math.max(floor, prev + diff) : Math.max(10, prev + diff);
         if (!isTimerRunning) {
           setTimerDuration(next);
-        } else if (next > timerDuration) {
-          setTimerDuration(next);
+        } else {
+          timerEndAtRef.current = Date.now() + next * 1000;
+          if (next > timerDuration) setTimerDuration(next);
         }
         return next;
       });
@@ -397,11 +419,12 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     }
   }, [isStopwatchRunning]);
 
-  // 8. Weather (Single API call on city search)
+  // 8. Weather (Single API call, safe localStorage commit only on valid city)
   const [weather, setWeather] = useState<WeatherInfo | null>(null);
   const [savedWeatherCity, setSavedWeatherCity] = useState(
     () => localStorage.getItem("ms-island-weather-city") || ""
   );
+  const savedWeatherCityRef = useRef(savedWeatherCity);
   const [weatherLoading, setWeatherLoading] = useState(false);
   const [weatherError, setWeatherError] = useState("");
 
@@ -411,18 +434,24 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
       setWeatherLoading(true);
       setWeatherError("");
       try {
-        const targetCity = cityOverride !== undefined ? cityOverride : savedWeatherCity;
+        const targetCity = cityOverride !== undefined ? cityOverride : savedWeatherCityRef.current;
+        const trimmed = targetCity.trim();
         const data = await invoke<WeatherInfo>("get_weather", {
-          city: targetCity.trim() ? targetCity.trim() : null,
+          city: trimmed ? trimmed : null,
         });
         setWeather(data);
+        if (cityOverride !== undefined) {
+          savedWeatherCityRef.current = trimmed;
+          setSavedWeatherCity(trimmed);
+          localStorage.setItem("ms-island-weather-city", trimmed);
+        }
       } catch (e: any) {
         setWeatherError(typeof e === "string" ? e : "Could not reach weather service");
       } finally {
         setWeatherLoading(false);
       }
     },
-    [isTauri, savedWeatherCity]
+    [isTauri]
   );
 
   useEffect(() => {
@@ -434,14 +463,9 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
 
   const handleSearchWeatherCity = useCallback(
     (nextCity: string) => {
-      localStorage.setItem("ms-island-weather-city", nextCity);
-      if (nextCity === savedWeatherCity) {
-        loadWeather(nextCity);
-      } else {
-        setSavedWeatherCity(nextCity);
-      }
+      loadWeather(nextCity.trim());
     },
-    [savedWeatherCity, loadWeather]
+    [loadWeather]
   );
 
   // 9. Notes & Windows Win+V Clipboard Two-Way Sync
@@ -708,11 +732,13 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     try {
       const result = await invoke<boolean>("set_autostart", { enabled: !autostartEnabled });
       setAutostartEnabled(result);
+      showToast("system", result ? "Start with Windows ON" : "Start with Windows OFF", 1800);
     } catch {
+      showToast("system", "Could not update startup setting", 2200);
     } finally {
       setAutostartBusy(false);
     }
-  }, [isTauri, autostartBusy, autostartEnabled]);
+  }, [isTauri, autostartBusy, autostartEnabled, showToast]);
 
   const handleToggleAutoHideFullscreen = useCallback(async () => {
     if (!isTauri) return;
@@ -741,6 +767,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
         return;
       }
       if (e.key === "Escape") {
+        setIsTimerFinished(false);
         setIsHovered(false);
         setActiveTab("music");
         return;
@@ -809,13 +836,13 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
 
   const handleMouseLeave = () => {
     mouseInsideRef.current = false;
-    if (contextMenu || isDraggingOutRef.current) return;
+    if (contextMenu || isDraggingOutRef.current || isTimerFinished) return;
     if (hoverEnterTimeoutRef.current) {
       clearTimeout(hoverEnterTimeoutRef.current);
       hoverEnterTimeoutRef.current = null;
     }
     hoverTimeoutRef.current = window.setTimeout(() => {
-      if (isDraggingOutRef.current || mouseInsideRef.current) return;
+      if (isDraggingOutRef.current || mouseInsideRef.current || isTimerFinished) return;
       setIsHovered(false);
       setActiveTab("music");
     }, 75);
@@ -1065,6 +1092,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
                 <WeatherTab
                   tokens={tokens}
                   weather={weather}
+                  savedCity={savedWeatherCity}
                   loading={weatherLoading}
                   error={weatherError}
                   onRefresh={() => loadWeather()}
