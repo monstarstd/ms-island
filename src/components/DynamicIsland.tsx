@@ -54,6 +54,7 @@ import {
   AudioDeviceInfo,
   BatteryInfo,
   ClipboardEntry,
+  ClipboardSyncPayload,
   IslandToast,
   ShelfFileInfo,
   SystemStats,
@@ -530,27 +531,35 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   };
 
   // -------------------------------------------------------------
-  // 8. Notes Scratchpad & Local Clipboard History
+  // 8. Notes Scratchpad & Windows Win+V Clipboard Two-Way Sync
   // -------------------------------------------------------------
   const [notesMode, setNotesMode] = useState<"scratchpad" | "clipboard">("scratchpad");
   const [notesText, setNotesText] = useState<string>(() => localStorage.getItem("ms-island-notes") || "");
   const [notesCopied, setNotesCopied] = useState<boolean>(false);
   const [clipboardHistory, setClipboardHistory] = useState<ClipboardEntry[]>([]);
-  const [copiedClipId, setCopiedClipId] = useState<number | null>(null);
+  const [winClipboardSynced, setWinClipboardSynced] = useState<boolean>(false);
+  const [copiedClipId, setCopiedClipId] = useState<string | null>(null);
+
+  const loadClipboardHistory = async () => {
+    if (!isTauri) return;
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const payload = await invoke<ClipboardSyncPayload>("get_clipboard_history");
+      setClipboardHistory(payload.items || []);
+      setWinClipboardSynced(Boolean(payload.windowsHistoryEnabled));
+    } catch {}
+  };
 
   useEffect(() => {
     if (!isTauri) return;
     let unlisten: (() => void) | undefined;
 
-    import("@tauri-apps/api/core").then(({ invoke }) => {
-      invoke<ClipboardEntry[]>("get_clipboard_history")
-        .then(setClipboardHistory)
-        .catch(() => {});
-    });
+    loadClipboardHistory();
 
     import("@tauri-apps/api/event").then(({ listen }) => {
-      listen<ClipboardEntry[]>("clipboard-updated", (e) => {
-        setClipboardHistory(e.payload);
+      listen<ClipboardSyncPayload>("clipboard-updated", (e) => {
+        setClipboardHistory(e.payload.items || []);
+        setWinClipboardSynced(Boolean(e.payload.windowsHistoryEnabled));
       }).then((fn) => {
         unlisten = fn;
       });
@@ -560,6 +569,12 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
       if (unlisten) unlisten();
     };
   }, [isTauri]);
+
+  useEffect(() => {
+    if (isHovered && activeTab === "notes" && notesMode === "clipboard") {
+      loadClipboardHistory();
+    }
+  }, [isHovered, activeTab, notesMode]);
 
   const handleNotesChange = (val: string) => {
     setNotesText(val);
@@ -579,7 +594,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     if (isTauri) {
       try {
         const { invoke } = await import("@tauri-apps/api/core");
-        await invoke("copy_clipboard_item", { text: item.text });
+        await invoke("copy_clipboard_item", { id: item.id, text: item.text });
       } catch {
         navigator.clipboard.writeText(item.text);
       }
@@ -588,12 +603,26 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     }
   };
 
+  const handleDeleteClipItem = async (id: string) => {
+    setClipboardHistory((prev) => prev.filter((item) => item.id !== id));
+    if (isTauri) {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        const updated = await invoke<ClipboardSyncPayload>("delete_clipboard_item", { id });
+        setClipboardHistory(updated.items || []);
+        setWinClipboardSynced(Boolean(updated.windowsHistoryEnabled));
+      } catch {}
+    }
+  };
+
   const handleClearClipboard = async () => {
     setClipboardHistory([]);
     if (isTauri) {
       try {
         const { invoke } = await import("@tauri-apps/api/core");
-        await invoke("clear_clipboard_history");
+        const updated = await invoke<ClipboardSyncPayload>("clear_clipboard_history");
+        setClipboardHistory(updated.items || []);
+        setWinClipboardSynced(Boolean(updated.windowsHistoryEnabled));
       } catch {}
     }
   };
@@ -1017,26 +1046,48 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
           ? "justify-center pt-2"
           : "justify-center pt-0";
 
+  // Adaptive dynamic idle width (breathes smoothly with exact active content!)
+  const idleWidthPx = (() => {
+    if (isDragOver) return 310;
+    if (showVolumeHud) return 285;
+    if (toast) {
+      return Math.min(350, Math.max(255, Math.round(165 + toast.message.length * 6.5)));
+    }
+    if (isTimerRunning || isTimerFinished) return 275;
+    if (isStopwatchRunning) return 282;
+    if (media.isPlaying) {
+      const titleLen = (media.title || "Playing Audio").length;
+      // Short title (~5-12 chars) -> ~290-325px; medium -> ~360-420px; long -> up to 488px
+      return Math.min(488, Math.max(288, Math.round(212 + titleLen * 6.8)));
+    }
+    if (weather) {
+      const weatherText = `${weather.temperature}°C ${weather.city} · ${weather.condition}`;
+      return Math.min(365, Math.max(275, Math.round(188 + weatherText.length * 5.6)));
+    }
+    // Pure compact idle (AM/PM time + short date + Lyrics button)
+    return 258;
+  })();
+
   // Fluid shape morphing: flush notch when docked to an edge -> full pill when detached
   const shellShapeCls = (() => {
     if (isHovered) {
-      if (dockEdge === "top") return "w-[516px] h-[256px] rounded-t-none rounded-b-[22px] border-t-0 p-3.5";
-      if (dockEdge === "left") return "w-[516px] h-[256px] rounded-l-none rounded-r-[22px] border-l-0 p-3.5";
-      if (dockEdge === "right") return "w-[516px] h-[256px] rounded-r-none rounded-l-[22px] border-r-0 p-3.5";
-      return "w-[516px] h-[256px] rounded-[22px] p-3.5";
+      if (dockEdge === "top") return "h-[256px] rounded-t-none rounded-b-[22px] border-t-0 p-3.5";
+      if (dockEdge === "left") return "h-[256px] rounded-l-none rounded-r-[22px] border-l-0 p-3.5";
+      if (dockEdge === "right") return "h-[256px] rounded-r-none rounded-l-[22px] border-r-0 p-3.5";
+      return "h-[256px] rounded-[22px] p-3.5";
     }
-    // Idle Bar shapes
+    // Idle Bar shapes (width controlled dynamically via inline style for fluid spring morphing)
     if (dockEdge === "top") {
-      return "w-[430px] h-[36px] rounded-t-none rounded-b-[16px] border-t-0 px-3.5 py-1.5 cursor-pointer";
+      return "h-[36px] rounded-t-none rounded-b-[16px] border-t-0 px-3.5 py-1.5 cursor-pointer";
     }
     if (dockEdge === "left") {
-      return "w-[430px] h-[36px] rounded-l-none rounded-r-[18px] border-l-0 px-3.5 py-1.5 cursor-pointer";
+      return "h-[36px] rounded-l-none rounded-r-[18px] border-l-0 px-3.5 py-1.5 cursor-pointer";
     }
     if (dockEdge === "right") {
-      return "w-[430px] h-[36px] rounded-r-none rounded-l-[18px] border-r-0 px-3.5 py-1.5 cursor-pointer";
+      return "h-[36px] rounded-r-none rounded-l-[18px] border-r-0 px-3.5 py-1.5 cursor-pointer";
     }
     // Detached away from edges -> smooth floating pill!
-    return "w-[422px] h-[38px] rounded-full px-4 py-1.5 cursor-pointer";
+    return "h-[38px] rounded-full px-4 py-1.5 cursor-pointer";
   })();
 
   const motionLiftCls = isMoving
@@ -1047,9 +1098,9 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     <div className={`relative w-full h-full flex items-start transition-all duration-300 ${outerAlignCls}`}>
       {/*
         FLAT SEAMLESS DYNAMIC ISLAND SHELL
+        - Adaptive dynamic width reacting to idle / weather / short title / long title
         - Flush edge-docked on Top / Left / Right; fluidly morphs into a floating pill when pulled away
         - Organic spring curve transition (island-shell-spring)
-        - Hover listeners strictly on this physical element
         - Right-click opens custom context menu (Refresh / Close)
       */}
       <div
@@ -1057,6 +1108,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
         onMouseLeave={handleMouseLeave}
         onWheel={handleWheelVolume}
         onContextMenu={handleContextMenu}
+        style={{ width: `${isHovered ? 516 : idleWidthPx}px` }}
         className={`island-shell-spring overflow-hidden border ${shellSurface} ${shellShapeCls} ${motionLiftCls} ${
           isDragOver ? "border-[#f97316] ring-1 ring-[#f97316]" : ""
         }`}
@@ -1972,13 +2024,27 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
                                 >
                                   + Note
                                 </button>
+                                <button
+                                  onClick={() => handleDeleteClipItem(item.id)}
+                                  className={`p-0.5 rounded border transition-colors ${subtleBtnCls}`}
+                                  title="Delete from clipboard history"
+                                >
+                                  <X className="w-3 h-3" />
+                                </button>
                               </div>
                             </div>
                           ))
                         )}
                       </div>
-                      <div className={`text-[10px] ${mutedText}`}>
-                        Stored in memory only · Automatically cleared on exit
+                      <div className={`flex items-center gap-1.5 text-[10px] ${mutedText}`}>
+                        {winClipboardSynced ? (
+                          <>
+                            <span className="w-1.5 h-1.5 rounded-full bg-[#f97316] flex-shrink-0" />
+                            <span>Synced with Windows Clipboard (Win + V)</span>
+                          </>
+                        ) : (
+                          <span>Local session history · Enable Win + V in Windows Settings to sync</span>
+                        )}
                       </div>
                     </>
                   )}

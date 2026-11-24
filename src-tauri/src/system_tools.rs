@@ -69,11 +69,18 @@ pub struct AudioDeviceInfo {
     pub is_default: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ClipboardEntry {
-    pub id: u64,
+    pub id: String,
     pub text: String,
-    pub timestamp: String,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClipboardSyncPayload {
+    pub items: Vec<ClipboardEntry>,
+    #[serde(rename = "windowsHistoryEnabled")]
+    pub windows_history_enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -479,8 +486,116 @@ pub fn is_other_app_fullscreen(own_hwnds: &[isize]) -> bool {
 }
 
 // -----------------------------------------------------------------------------
-// 5. Local Clipboard History Helpers (Zero-Overhead Sequence Check)
+// 5. Windows Built-in Clipboard History (Win + V) Two-Way Sync + Local Fallback
 // -----------------------------------------------------------------------------
+
+pub fn is_windows_clipboard_history_enabled() -> bool {
+    windows::ApplicationModel::DataTransfer::Clipboard::IsHistoryEnabled().unwrap_or(false)
+}
+
+pub fn fetch_windows_clipboard_history() -> Option<Vec<ClipboardEntry>> {
+    use windows::ApplicationModel::DataTransfer::{
+        Clipboard, ClipboardHistoryItemsResultStatus, StandardDataFormats,
+    };
+
+    if !Clipboard::IsHistoryEnabled().unwrap_or(false) {
+        return None;
+    }
+
+    let result = Clipboard::GetHistoryItemsAsync().ok()?.get().ok()?;
+    if result.Status().ok()? != ClipboardHistoryItemsResultStatus::Success {
+        return None;
+    }
+
+    let items = result.Items().ok()?;
+    let count = items.Size().unwrap_or(0).min(20);
+    let text_format = StandardDataFormats::Text().ok()?;
+    let mut entries = Vec::new();
+
+    for i in 0..count {
+        if let Ok(item) = items.GetAt(i) {
+            let id = item.Id().map(|s| s.to_string()).unwrap_or_default();
+            if let Ok(content) = item.Content() {
+                if content.Contains(&text_format).unwrap_or(false) {
+                    if let Ok(op) = content.GetTextAsync() {
+                        if let Ok(txt) = op.get() {
+                            let s = txt.to_string();
+                            let trimmed = s.trim();
+                            if !trimmed.is_empty() {
+                                let capped: String = trimmed.chars().take(4000).collect();
+                                entries.push(ClipboardEntry {
+                                    id,
+                                    text: capped,
+                                    source: "windows".to_string(),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Some(entries)
+}
+
+pub fn activate_windows_clipboard_item(id: &str, fallback_text: &str) -> bool {
+    use windows::ApplicationModel::DataTransfer::Clipboard;
+
+    if !id.is_empty() && Clipboard::IsHistoryEnabled().unwrap_or(false) {
+        if let Ok(op) = Clipboard::GetHistoryItemsAsync() {
+            if let Ok(res) = op.get() {
+                if let Ok(items) = res.Items() {
+                    let count = items.Size().unwrap_or(0);
+                    for i in 0..count {
+                        if let Ok(item) = items.GetAt(i) {
+                            if item.Id().map(|s| s.to_string()).unwrap_or_default() == id {
+                                if Clipboard::SetHistoryItemAsContent(&item).is_ok() {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    write_clipboard_text(fallback_text)
+}
+
+pub fn delete_windows_clipboard_item(id: &str) -> bool {
+    use windows::ApplicationModel::DataTransfer::Clipboard;
+
+    if id.is_empty() || !Clipboard::IsHistoryEnabled().unwrap_or(false) {
+        return false;
+    }
+
+    if let Ok(op) = Clipboard::GetHistoryItemsAsync() {
+        if let Ok(res) = op.get() {
+            if let Ok(items) = res.Items() {
+                let count = items.Size().unwrap_or(0);
+                for i in 0..count {
+                    if let Ok(item) = items.GetAt(i) {
+                        if item.Id().map(|s| s.to_string()).unwrap_or_default() == id {
+                            return Clipboard::DeleteItemFromHistory(&item).unwrap_or(false);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+pub fn clear_windows_clipboard_history() -> bool {
+    use windows::ApplicationModel::DataTransfer::Clipboard;
+
+    if Clipboard::IsHistoryEnabled().unwrap_or(false) {
+        return Clipboard::ClearHistory().unwrap_or(false);
+    }
+    false
+}
 
 pub fn read_clipboard_text_if_changed(last_seq: &mut u32) -> Option<String> {
     unsafe {

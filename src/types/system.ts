@@ -23,9 +23,14 @@ export interface AudioDeviceInfo {
 }
 
 export interface ClipboardEntry {
-  id: number;
+  id: string;
   text: string;
-  timestamp: string;
+  source: string;
+}
+
+export interface ClipboardSyncPayload {
+  items: ClipboardEntry[];
+  windowsHistoryEnabled: boolean;
 }
 
 export interface ShelfFileInfo {

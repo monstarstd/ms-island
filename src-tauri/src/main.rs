@@ -13,8 +13,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use system_tools::{
-    AudioDeviceInfo, BatteryInfo, ClipboardEntry, ShelfFileInfo, SystemMonitor, SystemStats,
-    VolumeInfo,
+    AudioDeviceInfo, BatteryInfo, ClipboardEntry, ClipboardSyncPayload, ShelfFileInfo,
+    SystemMonitor, SystemStats, VolumeInfo,
 };
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -35,7 +35,7 @@ struct AppState {
     audio_spectrum: Arc<AudioSpectrumCapture>,
     cached_lyrics: Arc<Mutex<String>>,
     is_lyrics_open: Arc<Mutex<bool>>,
-    clipboard_history: Arc<Mutex<Vec<ClipboardEntry>>>,
+    clipboard_history: Arc<Mutex<ClipboardSyncPayload>>,
     auto_hide_fullscreen: Arc<AtomicBool>,
 }
 
@@ -344,22 +344,98 @@ fn set_auto_hide_fullscreen(app: AppHandle, state: State<AppState>, enabled: boo
 }
 
 #[tauri::command]
-async fn get_clipboard_history(state: State<'_, AppState>) -> Result<Vec<ClipboardEntry>, ()> {
-    Ok(state.clipboard_history.lock().unwrap().clone())
+async fn get_clipboard_history(state: State<'_, AppState>) -> Result<ClipboardSyncPayload, ()> {
+    let store = state.clipboard_history.clone();
+    let payload = tokio::task::spawn_blocking(move || {
+        if let Some(win_items) = system_tools::fetch_windows_clipboard_history() {
+            let next = ClipboardSyncPayload {
+                items: win_items,
+                windows_history_enabled: true,
+            };
+            *store.lock().unwrap() = next.clone();
+            next
+        } else {
+            let mut guard = store.lock().unwrap();
+            guard.windows_history_enabled = false;
+            guard.clone()
+        }
+    })
+    .await
+    .unwrap_or(ClipboardSyncPayload {
+        items: vec![],
+        windows_history_enabled: false,
+    });
+    Ok(payload)
 }
 
 #[tauri::command]
-async fn copy_clipboard_item(text: String) -> Result<bool, ()> {
-    Ok(
-        tokio::task::spawn_blocking(move || system_tools::write_clipboard_text(&text))
-            .await
-            .unwrap_or(false),
-    )
+async fn copy_clipboard_item(id: String, text: String) -> Result<bool, ()> {
+    Ok(tokio::task::spawn_blocking(move || {
+        system_tools::activate_windows_clipboard_item(&id, &text)
+    })
+    .await
+    .unwrap_or(false))
 }
 
 #[tauri::command]
-fn clear_clipboard_history(state: State<AppState>) {
-    state.clipboard_history.lock().unwrap().clear();
+async fn delete_clipboard_item(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<ClipboardSyncPayload, ()> {
+    let store = state.clipboard_history.clone();
+    let updated = tokio::task::spawn_blocking(move || {
+        let _ = system_tools::delete_windows_clipboard_item(&id);
+        if let Some(win_items) = system_tools::fetch_windows_clipboard_history() {
+            let next = ClipboardSyncPayload {
+                items: win_items,
+                windows_history_enabled: true,
+            };
+            *store.lock().unwrap() = next.clone();
+            next
+        } else {
+            let mut guard = store.lock().unwrap();
+            guard.items.retain(|item| item.id != id);
+            guard.windows_history_enabled = false;
+            guard.clone()
+        }
+    })
+    .await
+    .unwrap_or(ClipboardSyncPayload {
+        items: vec![],
+        windows_history_enabled: false,
+    });
+
+    let _ = app.emit("clipboard-updated", &updated);
+    Ok(updated)
+}
+
+#[tauri::command]
+async fn clear_clipboard_history(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<ClipboardSyncPayload, ()> {
+    let store = state.clipboard_history.clone();
+    let updated = tokio::task::spawn_blocking(move || {
+        let win_enabled = system_tools::is_windows_clipboard_history_enabled();
+        if win_enabled {
+            let _ = system_tools::clear_windows_clipboard_history();
+        }
+        let next = ClipboardSyncPayload {
+            items: vec![],
+            windows_history_enabled: win_enabled,
+        };
+        *store.lock().unwrap() = next.clone();
+        next
+    })
+    .await
+    .unwrap_or(ClipboardSyncPayload {
+        items: vec![],
+        windows_history_enabled: false,
+    });
+
+    let _ = app.emit("clipboard-updated", &updated);
+    Ok(updated)
 }
 
 #[tauri::command]
@@ -396,14 +472,6 @@ fn start_window_drag(window: tauri::WebviewWindow) {
     let _ = window.start_dragging();
 }
 
-fn format_local_hhmm() -> String {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    format!("{}", secs)
-}
-
 fn main() {
     let media_mgr = Arc::new(Mutex::new(MediaManager::new()));
     let cached_track = Arc::new(Mutex::new(None::<MediaTrackInfo>));
@@ -412,7 +480,10 @@ fn main() {
     let audio_spectrum = Arc::new(AudioSpectrumCapture::start());
     let cached_lyrics = Arc::new(Mutex::new(String::new()));
     let is_lyrics_open = Arc::new(Mutex::new(false));
-    let clipboard_history = Arc::new(Mutex::new(Vec::<ClipboardEntry>::new()));
+    let clipboard_history = Arc::new(Mutex::new(ClipboardSyncPayload {
+        items: Vec::new(),
+        windows_history_enabled: false,
+    }));
     let auto_hide_fullscreen = Arc::new(AtomicBool::new(true));
 
     let media_mgr_clone = media_mgr.clone();
@@ -463,6 +534,7 @@ fn main() {
             set_auto_hide_fullscreen,
             get_clipboard_history,
             copy_clipboard_item,
+            delete_clipboard_item,
             clear_clipboard_history,
             open_shelf_file,
             reveal_shelf_file,
@@ -736,27 +808,41 @@ fn main() {
                         );
                     }
 
-                    // B. Clipboard Watcher (sequence-checked = 0% CPU when idle)
-                    if let Some(copied) =
-                        system_tools::read_clipboard_text_if_changed(&mut last_clip_seq)
-                    {
-                        let mut hist = clipboard_clone.lock().unwrap();
-                        hist.retain(|e| e.text != copied);
-                        hist.insert(
-                            0,
-                            ClipboardEntry {
-                                id: clip_id_counter,
-                                text: copied,
-                                timestamp: format_local_hhmm(),
-                            },
-                        );
-                        clip_id_counter += 1;
-                        if hist.len() > 10 {
-                            hist.truncate(10);
+                    // B. Windows Clipboard History (Win + V) Two-Way Sync + Local Fallback
+                    let clip_changed_text =
+                        system_tools::read_clipboard_text_if_changed(&mut last_clip_seq);
+                    if tick_count == 1 || clip_changed_text.is_some() || tick_count % 4 == 0 {
+                        if let Some(win_items) = system_tools::fetch_windows_clipboard_history() {
+                            let next = ClipboardSyncPayload {
+                                items: win_items,
+                                windows_history_enabled: true,
+                            };
+                            let mut guard = clipboard_clone.lock().unwrap();
+                            if *guard != next {
+                                *guard = next.clone();
+                                drop(guard);
+                                let _ = handle_bg.emit("clipboard-updated", next);
+                            }
+                        } else if let Some(copied) = clip_changed_text {
+                            let mut guard = clipboard_clone.lock().unwrap();
+                            guard.windows_history_enabled = false;
+                            guard.items.retain(|e| e.text != copied);
+                            guard.items.insert(
+                                0,
+                                ClipboardEntry {
+                                    id: format!("local-{}", clip_id_counter),
+                                    text: copied,
+                                    source: "local".to_string(),
+                                },
+                            );
+                            clip_id_counter += 1;
+                            if guard.items.len() > 15 {
+                                guard.items.truncate(15);
+                            }
+                            let snapshot = guard.clone();
+                            drop(guard);
+                            let _ = handle_bg.emit("clipboard-updated", snapshot);
                         }
-                        let snapshot = hist.clone();
-                        drop(hist);
-                        let _ = handle_bg.emit("clipboard-updated", snapshot);
                     }
 
                     // C. Fullscreen Auto-Hide & Battery Watcher (~every 900ms)
