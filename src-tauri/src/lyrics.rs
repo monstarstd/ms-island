@@ -1,14 +1,37 @@
 use regex::Regex;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::sync::OnceLock;
 use std::time::Duration;
 
 #[derive(Debug, Deserialize)]
 struct LrcLibResponse {
+    id: Option<i64>,
+    #[serde(rename = "trackName")]
+    track_name: Option<String>,
+    #[serde(rename = "artistName")]
+    artist_name: Option<String>,
+    #[serde(rename = "albumName")]
+    album_name: Option<String>,
+    duration: Option<f64>,
     #[serde(rename = "plainLyrics")]
     plain_lyrics: Option<String>,
     #[serde(rename = "syncedLyrics")]
     synced_lyrics: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LyricsSuggestion {
+    pub id: i64,
+    #[serde(rename = "trackName")]
+    pub track_name: String,
+    #[serde(rename = "artistName")]
+    pub artist_name: String,
+    #[serde(rename = "albumName")]
+    pub album_name: String,
+    #[serde(rename = "durationSec")]
+    pub duration_sec: u64,
+    pub lyrics: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -298,6 +321,78 @@ pub async fn fetch_full_lyrics(
     }
 
     None
+}
+
+/// Returns up to 6 deduplicated LRCLIB search suggestions with embedded plain lyrics
+pub async fn suggest_lyrics(query: &str) -> Vec<LyricsSuggestion> {
+    let trimmed = query.trim();
+    if trimmed.len() < 2 {
+        return Vec::new();
+    }
+
+    let client = http_client();
+    let url = format!("https://lrclib.net/api/search?q={}", urlencoding(trimmed));
+    let Ok(resp) = client.get(&url).send().await else {
+        return Vec::new();
+    };
+    let Ok(items) = resp.json::<Vec<LrcLibResponse>>().await else {
+        return Vec::new();
+    };
+
+    let mut out = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    for (idx, item) in items.into_iter().enumerate() {
+        let lyrics = item
+            .plain_lyrics
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .or_else(|| {
+                item.synced_lyrics
+                    .as_deref()
+                    .map(clean_lrc_to_plain)
+                    .filter(|s| !s.is_empty())
+            });
+
+        let Some(lyrics_text) = lyrics else {
+            continue;
+        };
+
+        let track_name = item.track_name.unwrap_or_default().trim().to_string();
+        if track_name.is_empty() {
+            continue;
+        }
+        let artist_name = item.artist_name.unwrap_or_default().trim().to_string();
+        let album_name = item.album_name.unwrap_or_default().trim().to_string();
+        let duration_sec = item.duration.unwrap_or(0.0).max(0.0).round() as u64;
+
+        let dedupe_key = format!(
+            "{}|{}|{}",
+            track_name.to_lowercase(),
+            artist_name.to_lowercase(),
+            duration_sec / 5
+        );
+        if !seen.insert(dedupe_key) {
+            continue;
+        }
+
+        out.push(LyricsSuggestion {
+            id: item.id.unwrap_or(idx as i64),
+            track_name,
+            artist_name,
+            album_name,
+            duration_sec,
+            lyrics: lyrics_text,
+        });
+
+        if out.len() >= 6 {
+            break;
+        }
+    }
+
+    out
 }
 
 /// Manual search query for user-typed artist/song query

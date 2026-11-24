@@ -836,7 +836,8 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     if (isStopwatchRunning) return 282;
     if (media.isPlaying) {
       const titleLen = (media.title || "Playing Audio").length;
-      return Math.min(488, Math.max(288, Math.round(212 + titleLen * 6.8)));
+      const artBonus = media.thumbnail ? 24 : 0;
+      return Math.min(504, Math.max(296, Math.round(212 + artBonus + titleLen * 6.8)));
     }
     if (weather) {
       const weatherText = `${weather.temperature}°C ${weather.city} · ${weather.condition}`;
@@ -867,6 +868,16 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     return "h-[38px] rounded-full px-4 py-1.5 cursor-pointer";
   })();
 
+  const idleMediaProgress =
+    !isHovered &&
+    media.isPlaying &&
+    media.durationSec > 0 &&
+    !isDragOver &&
+    !showVolumeHud &&
+    !activeDownload
+      ? Math.max(0, Math.min(1, media.positionSec / media.durationSec))
+      : null;
+
   return (
     <div className={`relative w-full h-full flex items-start ${outerAlignCls}`}>
       <div
@@ -875,10 +886,18 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
         onWheel={handleWheelVolume}
         onContextMenu={handleContextMenu}
         style={{ width: `${isHovered ? 516 : idleWidthPx}px` }}
-        className={`island-shell-spring overflow-hidden border ${tokens.shellSurface} ${shellShapeCls} ${
+        className={`relative island-shell-spring overflow-hidden border ${tokens.shellSurface} ${shellShapeCls} ${
           isMoving ? "scale-[1.016] shadow-2xl shadow-black/90" : "scale-100"
         } ${isDragOver ? "border-accent ring-1 ring-accent" : ""}`}
       >
+        {idleMediaProgress !== null && (
+          <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-[1.5px] bg-transparent z-10">
+            <div
+              className="h-full w-full bg-accent origin-left transition-transform duration-300 ease-linear"
+              style={{ transform: `scaleX(${idleMediaProgress.toFixed(4)})` }}
+            />
+          </div>
+        )}
         {!isHovered ? (
           <IdleBar
             tokens={tokens}

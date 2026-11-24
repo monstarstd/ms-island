@@ -145,6 +145,15 @@ export const IdleBar: React.FC<IdleBarProps> = React.memo(
             </div>
           ) : media.isPlaying ? (
             <div className="flex items-center gap-2 min-w-0 w-full">
+              {media.thumbnail && (
+                <img
+                  src={media.thumbnail}
+                  alt=""
+                  className={`w-[18px] h-[18px] rounded-[5px] object-cover flex-shrink-0 border ${
+                    isLight ? "border-zinc-300" : "border-zinc-700/70"
+                  }`}
+                />
+              )}
               <AudioVisualizer
                 isPlaying={media.isPlaying}
                 style={visualizerStyle}

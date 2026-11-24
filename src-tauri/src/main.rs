@@ -94,14 +94,19 @@ async fn search_lyrics_manual(state: State<'_, AppState>, query: String) -> Resu
     }
 }
 
+#[tauri::command]
+async fn suggest_lyrics(query: String) -> Result<Vec<lyrics::LyricsSuggestion>, ()> {
+    Ok(lyrics::suggest_lyrics(&query).await)
+}
+
 fn ensure_lyrics_on_screen(app: &AppHandle, lyrics_win: &tauri::WebviewWindow) {
     if let Ok(Some(monitor)) = app.primary_monitor() {
         let screen_size = monitor.size();
         let screen_w = screen_size.width as i32;
         let screen_h = screen_size.height as i32;
         let win_size = lyrics_win.outer_size().ok();
-        let win_w = win_size.map(|s| s.width as i32).unwrap_or(440);
-        let win_h = win_size.map(|s| s.height as i32).unwrap_or(580);
+        let win_w = win_size.map(|s| s.width as i32).unwrap_or(340);
+        let win_h = win_size.map(|s| s.height as i32).unwrap_or(468);
 
         let needs_reposition = match lyrics_win.outer_position() {
             Ok(pos) => {
@@ -114,8 +119,8 @@ fn ensure_lyrics_on_screen(app: &AppHandle, lyrics_win: &tauri::WebviewWindow) {
         };
 
         if needs_reposition {
-            let x = (screen_w - win_w - 40).max(20);
-            let y = ((screen_h - win_h) / 2).max(40);
+            let x = (screen_w - win_w - 24).max(20);
+            let y = 52.min((screen_h - win_h).max(20));
             let _ = lyrics_win.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
                 x,
                 y,
@@ -608,6 +613,7 @@ fn main() {
             get_full_lyrics,
             is_lyrics_window_open,
             search_lyrics_manual,
+            suggest_lyrics,
             toggle_lyrics_window,
             close_lyrics_window,
             set_lyrics_always_on_top,
@@ -848,13 +854,13 @@ fn main() {
                     let lyrics_w = lyrics_win
                         .outer_size()
                         .map(|s| s.width as i32)
-                        .unwrap_or(440);
+                        .unwrap_or(340);
                     let lyrics_h = lyrics_win
                         .outer_size()
                         .map(|s| s.height as i32)
-                        .unwrap_or(580);
-                    let lyrics_x = (screen_w - lyrics_w - 40).max(20);
-                    let lyrics_y = ((screen_h - lyrics_h) / 2).max(40);
+                        .unwrap_or(468);
+                    let lyrics_x = (screen_w - lyrics_w - 24).max(20);
+                    let lyrics_y = 52.min((screen_h - lyrics_h).max(20));
                     let _ = lyrics_win.set_position(tauri::Position::Physical(
                         tauri::PhysicalPosition {
                             x: lyrics_x,
