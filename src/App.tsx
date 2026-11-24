@@ -99,7 +99,13 @@ export const App: React.FC = () => {
       const u4 = await listen<MediaTrack>("media-updated", (event) => {
         applyTrackUpdate(event.payload);
       });
-      unlisteners = [u1, u2, u3, u4];
+      const u5 = await listen("media-cleared", () => {
+        if (!isMounted) return;
+        lastThumbIdRef.current = null;
+        cachedThumbDataRef.current = undefined;
+        setMedia(EMPTY_TRACK);
+      });
+      unlisteners = [u1, u2, u3, u4, u5];
     });
 
     // Initial state hydration (runs once, no heavy polling!)

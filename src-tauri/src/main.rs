@@ -9,8 +9,8 @@ mod weather;
 use audio_capture::AudioSpectrumCapture;
 use media_manager::{MediaManager, MediaTrackInfo};
 use serde::Serialize;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 use system_tools::{
     AudioDeviceInfo, BatteryInfo, ClipboardEntry, ClipboardSyncPayload, ShelfFileInfo,
@@ -20,6 +20,11 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, DragDropEvent, Emitter, Manager, State, WindowEvent};
 use weather::WeatherInfo;
+
+/// Poison-safe mutex helper so a panic on one thread can never cascade across threads
+fn lock_safe<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 #[derive(Debug, Clone, Serialize)]
 struct IslandToast {
@@ -40,17 +45,17 @@ struct AppState {
 }
 
 // -----------------------------------------------------------------------------
-// Fast Non-Blocking Cache Reads (NEVER block Main UI Thread!)
+// Fast Non-Blocking Cache Reads
 // -----------------------------------------------------------------------------
 
 #[tauri::command]
 async fn get_current_track(state: State<'_, AppState>) -> Result<Option<MediaTrackInfo>, ()> {
-    Ok(state.cached_track.lock().unwrap().clone())
+    Ok(lock_safe(&state.cached_track).clone())
 }
 
 #[tauri::command]
 async fn get_current_thumbnail(state: State<'_, AppState>) -> Result<Option<String>, ()> {
-    Ok(state.cached_thumbnail.lock().unwrap().clone())
+    Ok(lock_safe(&state.cached_thumbnail).clone())
 }
 
 #[tauri::command]
@@ -60,7 +65,7 @@ async fn get_audio_spectrum(state: State<'_, AppState>) -> Result<[f32; 8], ()> 
 
 #[tauri::command]
 async fn get_full_lyrics(state: State<'_, AppState>) -> Result<String, ()> {
-    Ok(state.cached_lyrics.lock().unwrap().clone())
+    Ok(lock_safe(&state.cached_lyrics).clone())
 }
 
 #[tauri::command]
@@ -72,14 +77,14 @@ fn is_lyrics_window_open(app: AppHandle, state: State<AppState>) -> bool {
     } else {
         false
     };
-    *state.is_lyrics_open.lock().unwrap() = actual_open;
+    *lock_safe(&state.is_lyrics_open) = actual_open;
     actual_open
 }
 
 #[tauri::command]
 async fn search_lyrics_manual(state: State<'_, AppState>, query: String) -> Result<String, ()> {
     if let Some(lyrics) = lyrics::manual_search_lyrics(&query).await {
-        *state.cached_lyrics.lock().unwrap() = lyrics.clone();
+        *lock_safe(&state.cached_lyrics) = lyrics.clone();
         Ok(lyrics)
     } else {
         Ok(String::from("No lyrics found in LRCLIB or Genius for this query."))
@@ -135,7 +140,7 @@ fn center_island_on_primary_monitor(app: &AppHandle) {
 
 #[tauri::command]
 fn toggle_lyrics_window(app: AppHandle, state: State<AppState>) -> bool {
-    let mut open_lock = state.is_lyrics_open.lock().unwrap();
+    let mut open_lock = lock_safe(&state.is_lyrics_open);
 
     if let Some(lyrics_win) = app.get_webview_window("lyrics") {
         let currently_visible = lyrics_win.is_visible().unwrap_or(false);
@@ -163,8 +168,7 @@ fn toggle_lyrics_window(app: AppHandle, state: State<AppState>) -> bool {
 
 #[tauri::command]
 fn close_lyrics_window(app: AppHandle, state: State<AppState>) {
-    let mut open_lock = state.is_lyrics_open.lock().unwrap();
-    *open_lock = false;
+    *lock_safe(&state.is_lyrics_open) = false;
     if let Some(lyrics_win) = app.get_webview_window("lyrics") {
         let _ = lyrics_win.hide();
     }
@@ -181,38 +185,44 @@ fn set_lyrics_always_on_top(app: AppHandle, pinned: bool) -> bool {
 }
 
 // -----------------------------------------------------------------------------
-// Async Media Transport & Win32/COM Commands (Offloaded to MTA worker pool!)
+// Async Media Transport & Win32/COM Commands (Worker Thread Pool)
 // -----------------------------------------------------------------------------
 
 #[tauri::command]
 async fn toggle_play_pause(state: State<'_, AppState>) -> Result<bool, ()> {
     let mgr = state.media_mgr.clone();
-    Ok(tokio::task::spawn_blocking(move || mgr.lock().unwrap().toggle_play_pause())
-        .await
-        .unwrap_or(false))
+    Ok(
+        tokio::task::spawn_blocking(move || lock_safe(&mgr).toggle_play_pause())
+            .await
+            .unwrap_or(false),
+    )
 }
 
 #[tauri::command]
 async fn skip_next(state: State<'_, AppState>) -> Result<bool, ()> {
     let mgr = state.media_mgr.clone();
-    Ok(tokio::task::spawn_blocking(move || mgr.lock().unwrap().skip_next())
-        .await
-        .unwrap_or(false))
+    Ok(
+        tokio::task::spawn_blocking(move || lock_safe(&mgr).skip_next())
+            .await
+            .unwrap_or(false),
+    )
 }
 
 #[tauri::command]
 async fn skip_prev(state: State<'_, AppState>) -> Result<bool, ()> {
     let mgr = state.media_mgr.clone();
-    Ok(tokio::task::spawn_blocking(move || mgr.lock().unwrap().skip_prev())
-        .await
-        .unwrap_or(false))
+    Ok(
+        tokio::task::spawn_blocking(move || lock_safe(&mgr).skip_prev())
+            .await
+            .unwrap_or(false),
+    )
 }
 
 #[tauri::command]
 async fn seek_position(state: State<'_, AppState>, position_sec: u64) -> Result<bool, ()> {
     let mgr = state.media_mgr.clone();
     Ok(
-        tokio::task::spawn_blocking(move || mgr.lock().unwrap().seek_position(position_sec))
+        tokio::task::spawn_blocking(move || lock_safe(&mgr).seek_position(position_sec))
             .await
             .unwrap_or(false),
     )
@@ -284,7 +294,7 @@ async fn switch_audio_device(device_id: String) -> Result<bool, String> {
 async fn get_system_stats(state: State<'_, AppState>) -> Result<SystemStats, ()> {
     let mon = state.sys_monitor.clone();
     Ok(
-        tokio::task::spawn_blocking(move || mon.lock().unwrap().get_stats())
+        tokio::task::spawn_blocking(move || lock_safe(&mon).get_stats())
             .await
             .unwrap_or(SystemStats {
                 cpu_percent: 0.0,
@@ -352,10 +362,10 @@ async fn get_clipboard_history(state: State<'_, AppState>) -> Result<ClipboardSy
                 items: win_items,
                 windows_history_enabled: true,
             };
-            *store.lock().unwrap() = next.clone();
+            *lock_safe(&store) = next.clone();
             next
         } else {
-            let mut guard = store.lock().unwrap();
+            let mut guard = lock_safe(&store);
             guard.windows_history_enabled = false;
             guard.clone()
         }
@@ -391,10 +401,10 @@ async fn delete_clipboard_item(
                 items: win_items,
                 windows_history_enabled: true,
             };
-            *store.lock().unwrap() = next.clone();
+            *lock_safe(&store) = next.clone();
             next
         } else {
-            let mut guard = store.lock().unwrap();
+            let mut guard = lock_safe(&store);
             guard.items.retain(|item| item.id != id);
             guard.windows_history_enabled = false;
             guard.clone()
@@ -425,7 +435,7 @@ async fn clear_clipboard_history(
             items: vec![],
             windows_history_enabled: win_enabled,
         };
-        *store.lock().unwrap() = next.clone();
+        *lock_safe(&store) = next.clone();
         next
     })
     .await
@@ -570,6 +580,7 @@ fn main() {
                             }
                             "reset_pos" => {
                                 center_island_on_primary_monitor(app_h);
+                                let _ = app_h.emit("island-dock-changed", "top");
                                 if let Some(w) = app_h.get_webview_window("island") {
                                     let _ = w.show();
                                 }
@@ -613,121 +624,120 @@ fn main() {
 
                 let handle_drop = app_handle.clone();
                 let last_edge = Arc::new(Mutex::new(String::from("top")));
-                let move_seq = Arc::new(std::sync::atomic::AtomicU64::new(0));
+                let move_seq = Arc::new(AtomicU64::new(0));
                 let is_snapping = Arc::new(AtomicBool::new(false));
                 let snap_flag_evt = is_snapping.clone();
 
-                island_win.on_window_event(move |event| {
-                    match event {
-                        WindowEvent::DragDrop(dd) => match dd {
-                            DragDropEvent::Enter { .. } => {
-                                let _ = handle_drop.emit("shelf-drag-state", true);
+                island_win.on_window_event(move |event| match event {
+                    WindowEvent::DragDrop(dd) => match dd {
+                        DragDropEvent::Enter { .. } => {
+                            let _ = handle_drop.emit("shelf-drag-state", true);
+                        }
+                        DragDropEvent::Leave => {
+                            let _ = handle_drop.emit("shelf-drag-state", false);
+                        }
+                        DragDropEvent::Drop { paths, .. } => {
+                            let _ = handle_drop.emit("shelf-drag-state", false);
+                            let files: Vec<ShelfFileInfo> = paths
+                                .iter()
+                                .map(|p| system_tools::build_shelf_file_info(p))
+                                .collect();
+                            if !files.is_empty() {
+                                let _ = handle_drop.emit("shelf-files-dropped", files);
                             }
-                            DragDropEvent::Leave => {
-                                let _ = handle_drop.emit("shelf-drag-state", false);
-                            }
-                            DragDropEvent::Drop { paths, .. } => {
-                                let _ = handle_drop.emit("shelf-drag-state", false);
-                                let files: Vec<ShelfFileInfo> = paths
-                                    .iter()
-                                    .map(|p| system_tools::build_shelf_file_info(p))
-                                    .collect();
-                                if !files.is_empty() {
-                                    let _ = handle_drop.emit("shelf-files-dropped", files);
-                                }
-                            }
-                            _ => {}
-                        },
-                        WindowEvent::Moved(pos) => {
-                            if snap_flag_evt.load(Ordering::Relaxed) {
-                                return;
-                            }
-
-                            let (screen_w, win_w) =
-                                match (handle_drop.primary_monitor(), handle_drop.get_webview_window("island")) {
-                                    (Ok(Some(m)), Some(w)) => (
-                                        m.size().width as i32,
-                                        w.outer_size().map(|s| s.width as i32).unwrap_or(560),
-                                    ),
-                                    _ => (1920, 560),
-                                };
-
-                            let top_dist = pos.y;
-                            let left_dist = pos.x;
-                            let right_dist = screen_w - (pos.x + win_w);
-
-                            let edge = if top_dist <= 24 {
-                                "top"
-                            } else if left_dist <= 26 {
-                                "left"
-                            } else if right_dist <= 26 {
-                                "right"
-                            } else {
-                                "floating"
-                            };
-
-                            {
-                                let mut prev = last_edge.lock().unwrap();
-                                if prev.as_str() != edge {
-                                    *prev = edge.to_string();
-                                    let _ = handle_drop.emit("island-dock-changed", edge);
-                                }
-                            }
-
-                            // Notify subtle fluid motion state + schedule magnetic edge snap after drag stops
-                            let seq = move_seq.fetch_add(1, Ordering::SeqCst) + 1;
-                            let _ = handle_drop.emit("island-moving", true);
-
-                            let seq_check = move_seq.clone();
-                            let h_snap = handle_drop.clone();
-                            let snap_guard = snap_flag_evt.clone();
-                            let edge_owned = edge.to_string();
-                            let cur_x = pos.x;
-                            let cur_y = pos.y;
-
-                            tauri::async_runtime::spawn(async move {
-                                tokio::time::sleep(Duration::from_millis(190)).await;
-                                if seq_check.load(Ordering::SeqCst) != seq {
-                                    return;
-                                }
-                                let _ = h_snap.emit("island-moving", false);
-
-                                // Magnetic flush snap if near Top, Left, or Right edge
-                                let target = match edge_owned.as_str() {
-                                    "top" if cur_y != 0 => Some((cur_x.clamp(0, (screen_w - win_w).max(0)), 0)),
-                                    "left" if cur_x != 0 => Some((0, cur_y.max(0))),
-                                    "right" if cur_x != screen_w - win_w => {
-                                        Some(((screen_w - win_w).max(0), cur_y.max(0)))
-                                    }
-                                    _ => None,
-                                };
-
-                                if let Some((tx, ty)) = target {
-                                    snap_guard.store(true, Ordering::Relaxed);
-                                    let steps = 6;
-                                    for step in 1..=steps {
-                                        let t = (step as f32) / (steps as f32);
-                                        // Smooth ease-out cubic glide
-                                        let ease = 1.0 - (1.0 - t).powi(3);
-                                        let nx = cur_x + ((tx - cur_x) as f32 * ease).round() as i32;
-                                        let ny = cur_y + ((ty - cur_y) as f32 * ease).round() as i32;
-                                        let h_ui = h_snap.clone();
-                                        let _ = h_snap.run_on_main_thread(move || {
-                                            if let Some(w) = h_ui.get_webview_window("island") {
-                                                let _ = w.set_position(tauri::Position::Physical(
-                                                    tauri::PhysicalPosition { x: nx, y: ny },
-                                                ));
-                                            }
-                                        });
-                                        tokio::time::sleep(Duration::from_millis(12)).await;
-                                    }
-                                    tokio::time::sleep(Duration::from_millis(40)).await;
-                                    snap_guard.store(false, Ordering::Relaxed);
-                                }
-                            });
                         }
                         _ => {}
+                    },
+                    WindowEvent::Moved(pos) => {
+                        if snap_flag_evt.load(Ordering::Relaxed) {
+                            return;
+                        }
+
+                        let (screen_w, win_w) = match (
+                            handle_drop.primary_monitor(),
+                            handle_drop.get_webview_window("island"),
+                        ) {
+                            (Ok(Some(m)), Some(w)) => (
+                                m.size().width as i32,
+                                w.outer_size().map(|s| s.width as i32).unwrap_or(560),
+                            ),
+                            _ => (1920, 560),
+                        };
+
+                        let top_dist = pos.y;
+                        let left_dist = pos.x;
+                        let right_dist = screen_w - (pos.x + win_w);
+
+                        let edge = if top_dist <= 24 {
+                            "top"
+                        } else if left_dist <= 26 {
+                            "left"
+                        } else if right_dist <= 26 {
+                            "right"
+                        } else {
+                            "floating"
+                        };
+
+                        {
+                            let mut prev = lock_safe(&last_edge);
+                            if prev.as_str() != edge {
+                                *prev = edge.to_string();
+                                let _ = handle_drop.emit("island-dock-changed", edge);
+                            }
+                        }
+
+                        let seq = move_seq.fetch_add(1, Ordering::SeqCst) + 1;
+                        let _ = handle_drop.emit("island-moving", true);
+
+                        let seq_check = move_seq.clone();
+                        let h_snap = handle_drop.clone();
+                        let snap_guard = snap_flag_evt.clone();
+                        let edge_owned = edge.to_string();
+                        let cur_x = pos.x;
+                        let cur_y = pos.y;
+
+                        tauri::async_runtime::spawn(async move {
+                            tokio::time::sleep(Duration::from_millis(190)).await;
+                            if seq_check.load(Ordering::SeqCst) != seq {
+                                return;
+                            }
+                            let _ = h_snap.emit("island-moving", false);
+
+                            let target = match edge_owned.as_str() {
+                                "top" if cur_y != 0 => {
+                                    Some((cur_x.clamp(0, (screen_w - win_w).max(0)), 0))
+                                }
+                                "left" if cur_x != 0 => Some((0, cur_y.max(0))),
+                                "right" if cur_x != screen_w - win_w => {
+                                    Some(((screen_w - win_w).max(0), cur_y.max(0)))
+                                }
+                                _ => None,
+                            };
+
+                            if let Some((tx, ty)) = target {
+                                snap_guard.store(true, Ordering::Relaxed);
+                                let steps = 6;
+                                for step in 1..=steps {
+                                    let t = (step as f32) / (steps as f32);
+                                    let ease = 1.0 - (1.0 - t).powi(3);
+                                    let nx = cur_x + ((tx - cur_x) as f32 * ease).round() as i32;
+                                    let ny = cur_y + ((ty - cur_y) as f32 * ease).round() as i32;
+                                    let h_ui = h_snap.clone();
+                                    let _ = h_snap.run_on_main_thread(move || {
+                                        if let Some(w) = h_ui.get_webview_window("island") {
+                                            let _ = w.set_position(tauri::Position::Physical(
+                                                tauri::PhysicalPosition { x: nx, y: ny },
+                                            ));
+                                        }
+                                    });
+                                    tokio::time::sleep(Duration::from_millis(12)).await;
+                                }
+                                tokio::time::sleep(Duration::from_millis(40)).await;
+                                snap_guard.store(false, Ordering::Relaxed);
+                            }
+                        });
                     }
+                    _ => {}
                 });
             }
 
@@ -765,7 +775,7 @@ fn main() {
                             api.prevent_close();
                             let _ = lyrics_win_clone.hide();
                             if let Some(st) = app_handle_close.try_state::<AppState>() {
-                                *st.is_lyrics_open.lock().unwrap() = false;
+                                *lock_safe(&st.is_lyrics_open) = false;
                             }
                             let _ = app_handle_close.emit("lyrics-visibility-changed", false);
                         }
@@ -773,10 +783,11 @@ fn main() {
                 }
             }
 
-            // 3. Dedicated Background OS Thread (MTA COM) — NEVER touches Main UI thread locks!
+            // 3. Dedicated Background OS Thread (MTA COM)
             let handle_bg = app_handle.clone();
             std::thread::spawn(move || {
                 let mut current_lyrics_title = String::new();
+                let mut had_active_track = false;
                 let mut last_clip_seq: u32 = 0;
                 let mut clip_id_counter: u64 = 1;
                 let mut last_caps = system_tools::is_caps_lock_on();
@@ -784,7 +795,6 @@ fn main() {
                 let mut hidden_by_fullscreen = false;
                 let mut tick_count: u64 = 0;
 
-                // Prime clipboard sequence without capturing pre-existing clipboard
                 let _ = system_tools::read_clipboard_text_if_changed(&mut last_clip_seq);
 
                 loop {
@@ -817,14 +827,14 @@ fn main() {
                                 items: win_items,
                                 windows_history_enabled: true,
                             };
-                            let mut guard = clipboard_clone.lock().unwrap();
+                            let mut guard = lock_safe(&clipboard_clone);
                             if *guard != next {
                                 *guard = next.clone();
                                 drop(guard);
                                 let _ = handle_bg.emit("clipboard-updated", next);
                             }
                         } else if let Some(copied) = clip_changed_text {
-                            let mut guard = clipboard_clone.lock().unwrap();
+                            let mut guard = lock_safe(&clipboard_clone);
                             guard.windows_history_enabled = false;
                             guard.items.retain(|e| e.text != copied);
                             guard.items.insert(
@@ -877,7 +887,6 @@ fn main() {
                         }
                         last_battery = bat_now;
 
-                        // Smart Fullscreen Auto-Hide (uses cached HWNDs, dispatches show/hide safely)
                         if auto_hide_clone.load(Ordering::Relaxed) {
                             let is_fs = system_tools::is_other_app_fullscreen(&own_hwnds);
                             if is_fs && !hidden_by_fullscreen {
@@ -908,50 +917,67 @@ fn main() {
                         }
                     }
 
-                    // D. Media SMTC & Cached Thumbnail Update (runs ONLY on this background thread)
+                    // D. Media SMTC & Cached Thumbnail Update (clears cleanly when player closes!)
                     let (track_opt, thumb_opt) = {
-                        let mut mgr = media_mgr_clone.lock().unwrap();
+                        let mut mgr = lock_safe(&media_mgr_clone);
                         let t = mgr.get_current_track_info();
-                        let thumb = mgr.get_cached_thumbnail();
+                        let thumb = if t.is_some() {
+                            mgr.get_cached_thumbnail()
+                        } else {
+                            None
+                        };
                         (t, thumb)
                     };
 
-                    *cached_track_clone.lock().unwrap() = track_opt.clone();
-                    *cached_thumb_clone.lock().unwrap() = thumb_opt;
+                    *lock_safe(&cached_track_clone) = track_opt.clone();
+                    *lock_safe(&cached_thumb_clone) = thumb_opt;
 
-                    if let Some(track) = track_opt {
-                        // Lightweight emit (NO giant base64 image in payload!)
-                        let _ = handle_bg.emit("media-updated", &track);
+                    match track_opt {
+                        Some(track) if !track.title.is_empty() => {
+                            had_active_track = true;
+                            let _ = handle_bg.emit("media-updated", &track);
 
-                        if !track.title.is_empty() && track.title != current_lyrics_title {
-                            current_lyrics_title = track.title.clone();
-                            let title_for_fetch = track.title.clone();
-                            let artist_for_fetch = track.artist.clone();
-                            let duration_sec = track.duration_sec;
+                            if track.title != current_lyrics_title {
+                                current_lyrics_title = track.title.clone();
+                                let title_for_fetch = track.title.clone();
+                                let artist_for_fetch = track.artist.clone();
+                                let duration_sec = track.duration_sec;
 
-                            let handle_inner = handle_bg.clone();
-                            let cached_inner = cached_lyrics_clone.clone();
+                                let handle_inner = handle_bg.clone();
+                                let cached_inner = cached_lyrics_clone.clone();
 
-                            *cached_inner.lock().unwrap() = String::from("Searching for lyrics...");
-                            let _ = handle_inner.emit("lyrics-updated", "Searching for lyrics...");
+                                *lock_safe(&cached_inner) = String::from("Searching for lyrics...");
+                                let _ =
+                                    handle_inner.emit("lyrics-updated", "Searching for lyrics...");
 
-                            tauri::async_runtime::spawn(async move {
-                                let lyrics_text = match lyrics::fetch_full_lyrics(
-                                    &title_for_fetch,
-                                    &artist_for_fetch,
-                                    duration_sec,
-                                )
-                                .await
-                                {
-                                    Some(full) => full,
-                                    None => String::from(
-                                        "No lyrics found online for this track. Use the search bar above to search manually.",
-                                    ),
-                                };
+                                tauri::async_runtime::spawn(async move {
+                                    let lyrics_text = match lyrics::fetch_full_lyrics(
+                                        &title_for_fetch,
+                                        &artist_for_fetch,
+                                        duration_sec,
+                                    )
+                                    .await
+                                    {
+                                        Some(full) => full,
+                                        None => String::from(
+                                            "No lyrics found online for this track. Use the search bar above to search manually.",
+                                        ),
+                                    };
 
-                                *cached_inner.lock().unwrap() = lyrics_text.clone();
-                                let _ = handle_inner.emit("lyrics-updated", &lyrics_text);
-                            });
+                                    *lock_safe(&cached_inner) = lyrics_text.clone();
+                                    let _ = handle_inner.emit("lyrics-updated", &lyrics_text);
+                                });
+                            }
+                        }
+                        _ => {
+                            // Clear stale track & lyrics when browser/Spotify session closes
+                            if had_active_track {
+                                had_active_track = false;
+                                current_lyrics_title.clear();
+                                *lock_safe(&cached_lyrics_clone) = String::new();
+                                let _ = handle_bg.emit("media-cleared", ());
+                                let _ = handle_bg.emit("lyrics-updated", "");
+                            }
                         }
                     }
                 }

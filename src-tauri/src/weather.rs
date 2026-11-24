@@ -1,4 +1,6 @@
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
+use std::time::Duration;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WeatherInfo {
@@ -67,6 +69,17 @@ struct OpenMeteoDaily {
     temperature_2m_min: Vec<f64>,
 }
 
+fn weather_http_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .user_agent("MSIsland/0.2.0")
+            .timeout(Duration::from_secs(7))
+            .build()
+            .expect("failed to build weather HTTP client")
+    })
+}
+
 fn map_wmo_code(code: i64, is_day: bool) -> (&'static str, &'static str) {
     match code {
         0 => ("Clear Sky", if is_day { "sun" } else { "moon" }),
@@ -92,7 +105,10 @@ fn urlencode(input: &str) -> String {
     url::form_urlencoded::byte_serialize(input.as_bytes()).collect()
 }
 
-async fn resolve_location(client: &reqwest::Client, city_query: Option<&str>) -> Option<(String, f64, f64)> {
+async fn resolve_location(
+    client: &reqwest::Client,
+    city_query: Option<&str>,
+) -> Option<(String, f64, f64)> {
     if let Some(q) = city_query {
         let trimmed = q.trim();
         if !trimmed.is_empty() {
@@ -102,7 +118,10 @@ async fn resolve_location(client: &reqwest::Client, city_query: Option<&str>) ->
             );
             if let Ok(resp) = client.get(&url).send().await {
                 if let Ok(geo) = resp.json::<GeocodeResponse>().await {
-                    if let Some(first) = geo.results.and_then(|mut r| if r.is_empty() { None } else { Some(r.remove(0)) }) {
+                    if let Some(first) = geo
+                        .results
+                        .and_then(|mut r| if r.is_empty() { None } else { Some(r.remove(0)) })
+                    {
                         return Some((first.name, first.latitude, first.longitude));
                     }
                 }
@@ -111,7 +130,6 @@ async fn resolve_location(client: &reqwest::Client, city_query: Option<&str>) ->
         }
     }
 
-    // Auto-detect via ipwho.is (HTTPS)
     if let Ok(resp) = client.get("https://ipwho.is/").send().await {
         if let Ok(ip) = resp.json::<IpWhoResponse>().await {
             if let (Some(city), Some(lat), Some(lon)) = (ip.city, ip.latitude, ip.longitude) {
@@ -120,8 +138,11 @@ async fn resolve_location(client: &reqwest::Client, city_query: Option<&str>) ->
         }
     }
 
-    // Fallback: ip-api.com
-    if let Ok(resp) = client.get("http://ip-api.com/json/?fields=city,lat,lon").send().await {
+    if let Ok(resp) = client
+        .get("http://ip-api.com/json/?fields=city,lat,lon")
+        .send()
+        .await
+    {
         if let Ok(ip) = resp.json::<IpApiResponse>().await {
             if let (Some(city), Some(lat), Some(lon)) = (ip.city, ip.lat, ip.lon) {
                 return Some((city, lat, lon));
@@ -129,18 +150,13 @@ async fn resolve_location(client: &reqwest::Client, city_query: Option<&str>) ->
         }
     }
 
-    // Final sensible fallback: Jakarta
     Some(("Jakarta".to_string(), -6.2088, 106.8456))
 }
 
 pub async fn fetch_weather(city_query: Option<String>) -> Result<WeatherInfo, String> {
-    let client = reqwest::Client::builder()
-        .user_agent("MSIsland/0.1.0")
-        .timeout(std::time::Duration::from_secs(7))
-        .build()
-        .map_err(|e| format!("HTTP client error: {}", e))?;
+    let client = weather_http_client();
 
-    let (city, lat, lon) = resolve_location(&client, city_query.as_deref())
+    let (city, lat, lon) = resolve_location(client, city_query.as_deref())
         .await
         .ok_or_else(|| "Location not found".to_string())?;
 

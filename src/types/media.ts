@@ -9,8 +9,3 @@ export interface MediaTrack {
   positionSec: number;
   durationSec: number;
 }
-
-export interface LyricLine {
-  timeSec: number;
-  text: string;
-}
