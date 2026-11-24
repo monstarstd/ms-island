@@ -1,9 +1,17 @@
 import React from "react";
-import { FileText, Hourglass, Inbox, Timer as TimerIcon } from "lucide-react";
+import { ArrowDownToLine, FileText, Hourglass, Inbox, Timer as TimerIcon } from "lucide-react";
 import { MediaTrack } from "../../types/media";
-import { IslandToast, VisualizerStyle, VolumeInfo, WeatherInfo } from "../../types/system";
+import {
+  ActiveDownloadInfo,
+  IslandToast,
+  VisualizerStyle,
+  VolumeInfo,
+  WeatherInfo,
+} from "../../types/system";
 import { AudioVisualizer } from "../AudioVisualizer";
 import {
+  formatBytes,
+  formatSpeed,
   formatStopwatch,
   formatTime,
   IslandThemeTokens,
@@ -23,6 +31,7 @@ interface IdleBarProps {
   showVolumeHud: boolean;
   volume: VolumeInfo;
   toast: IslandToast | null;
+  activeDownload: ActiveDownloadInfo | null;
   isTimerRunning: boolean;
   isTimerFinished: boolean;
   timerRemaining: number;
@@ -46,6 +55,7 @@ export const IdleBar: React.FC<IdleBarProps> = React.memo(
     showVolumeHud,
     volume,
     toast,
+    activeDownload,
     isTimerRunning,
     isTimerFinished,
     timerRemaining,
@@ -101,6 +111,17 @@ export const IdleBar: React.FC<IdleBarProps> = React.memo(
             <div className="flex items-center gap-1.5 text-[11px] font-medium truncate">
               <span className="w-1.5 h-1.5 rounded-full bg-[#f97316] flex-shrink-0" />
               <span className="truncate">{toast.message}</span>
+            </div>
+          ) : activeDownload ? (
+            <div className="flex items-center gap-1.5 min-w-0 text-[11px]">
+              <ArrowDownToLine className="w-3.5 h-3.5 text-[#f97316] flex-shrink-0" />
+              <span className="font-mono tabular-nums font-semibold text-[#f97316] flex-shrink-0">
+                {formatSpeed(activeDownload.speedBytesPerSec)}
+              </span>
+              <span className={`font-mono tabular-nums text-[10px] flex-shrink-0 ${mutedText}`}>
+                {formatBytes(activeDownload.bytesDownloaded)}
+              </span>
+              <span className="truncate font-medium">{activeDownload.name}</span>
             </div>
           ) : isTimerRunning || isTimerFinished ? (
             <div className="flex items-center gap-1.5 min-w-0 truncate">

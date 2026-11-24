@@ -1,6 +1,9 @@
 #![windows_subsystem = "windows"]
 
 mod audio_capture;
+mod downloads;
+mod drag_out;
+mod hotkeys;
 mod lyrics;
 mod media_manager;
 mod system_tools;
@@ -467,6 +470,19 @@ async fn reveal_shelf_file(path: String) -> Result<bool, ()> {
 }
 
 #[tauri::command]
+async fn start_file_drag_out(app: AppHandle, path: String) -> Result<bool, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.run_on_main_thread(move || {
+        let res = drag_out::start_native_file_drag(&path);
+        let _ = tx.send(res);
+    })
+    .map_err(|e| format!("Failed to dispatch OLE drag to main thread: {}", e))?;
+
+    rx.await
+        .map_err(|_| "Drag operation cancelled".to_string())?
+}
+
+#[tauri::command]
 fn reset_island_position(app: AppHandle) {
     center_island_on_primary_monitor(&app);
     let _ = app.emit("island-dock-changed", "top");
@@ -557,6 +573,7 @@ fn main() {
             clear_clipboard_history,
             open_shelf_file,
             reveal_shelf_file,
+            start_file_drag_out,
             reset_island_position,
             quit_app,
             start_window_drag
@@ -793,6 +810,7 @@ fn main() {
             }
 
             // 3A. Dedicated SMTC Media & Lyrics Thread (Isolated MTA COM — NEVER blocked by Clipboard!)
+            let media_for_hotkey = media_mgr_clone.clone();
             let handle_media = app_handle.clone();
             std::thread::spawn(move || {
                 unsafe {
@@ -1026,6 +1044,36 @@ fn main() {
                     }
                 }
             });
+
+            // 3C. Global Keyboard Shortcuts (Alt+I, Alt+L, Alt+Shift+Space)
+            hotkeys::spawn_global_hotkeys(
+                app_handle.clone(),
+                |app_h| {
+                    let h_ui = app_h.clone();
+                    let _ = app_h.run_on_main_thread(move || {
+                        if let Some(st) = h_ui.try_state::<AppState>() {
+                            let _ = toggle_lyrics_window(h_ui.clone(), st);
+                        }
+                    });
+                },
+                move |app_h| {
+                    let mgr = media_for_hotkey.clone();
+                    let h = app_h.clone();
+                    tauri::async_runtime::spawn_blocking(move || {
+                        let _ = lock_safe(&mgr).toggle_play_pause();
+                        let _ = h.emit(
+                            "island-toast",
+                            IslandToast {
+                                kind: "media".to_string(),
+                                message: "Play / Pause".to_string(),
+                            },
+                        );
+                    });
+                },
+            );
+
+            // 3D. Live Browser Downloads Watcher (Brave / Chrome / Edge / Firefox -> Auto-Shelf)
+            downloads::spawn_downloads_watcher(app_handle.clone());
 
             Ok(())
         })

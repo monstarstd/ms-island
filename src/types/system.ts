@@ -39,6 +39,14 @@ export interface ShelfFileInfo {
   sizeBytes: number;
   isDir: boolean;
   ext: string;
+  fromDownload?: boolean;
+}
+
+export interface ActiveDownloadInfo {
+  name: string;
+  path: string;
+  bytesDownloaded: number;
+  speedBytesPerSec: number;
 }
 
 export interface IslandToast {

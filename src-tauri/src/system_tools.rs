@@ -758,8 +758,47 @@ pub fn is_autostart_enabled() -> bool {
     }
 }
 
-/// Registers both HKCU\...\Run AND an immediate Windows Task Scheduler ONLOGON task
-/// (bypasses Explorer's 60-90s Run-queue delay so MS Island launches right when desktop appears).
+fn get_startup_lnk_path() -> Option<std::path::PathBuf> {
+    std::env::var("APPDATA").ok().map(|appdata| {
+        std::path::PathBuf::from(appdata)
+            .join("Microsoft")
+            .join("Windows")
+            .join("Start Menu")
+            .join("Programs")
+            .join("Startup")
+            .join("MSIsland.lnk")
+    })
+}
+
+fn create_startup_lnk(exe_path: &std::path::Path) {
+    if let Some(lnk_path) = get_startup_lnk_path() {
+        let exe_escaped = exe_path.to_string_lossy().replace('\'', "''");
+        let lnk_escaped = lnk_path.to_string_lossy().replace('\'', "''");
+        let work_dir = exe_path
+            .parent()
+            .map(|p| p.to_string_lossy().replace('\'', "''"))
+            .unwrap_or_default();
+
+        let ps_cmd = format!(
+            "$ws=New-Object -ComObject WScript.Shell;$s=$ws.CreateShortcut('{}');$s.TargetPath='{}';$s.WorkingDirectory='{}';$s.Save()",
+            lnk_escaped, exe_escaped, work_dir
+        );
+
+        let _ = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &ps_cmd])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
+    }
+}
+
+fn remove_startup_lnk() {
+    if let Some(lnk_path) = get_startup_lnk_path() {
+        let _ = std::fs::remove_file(lnk_path);
+    }
+}
+
+/// Registers both HKCU\...\Run AND a user Startup Folder shortcut (`MSIsland.lnk`)
+/// so MS Island launches reliably on Windows logon with standard user privileges.
 pub fn set_autostart_enabled(enabled: bool) -> Result<bool, String> {
     let subkey = HSTRING::from(RUN_SUBKEY);
     let value_name = HSTRING::from(APP_REG_NAME);
@@ -801,26 +840,13 @@ pub fn set_autostart_enabled(enabled: bool) -> Result<bool, String> {
             .map(|_| true)
             .map_err(|e| format!("Failed to write startup entry: {}", e));
 
-            // Also create immediate ONLOGON scheduled task (no admin required) to bypass Run-key delay
-            let _ = std::process::Command::new("schtasks")
-                .args([
-                    "/Create",
-                    "/TN",
-                    STARTUP_TASK_NAME,
-                    "/TR",
-                    &quoted_path,
-                    "/SC",
-                    "ONLOGON",
-                    "/RL",
-                    "LIMITED",
-                    "/F",
-                ])
-                .creation_flags(CREATE_NO_WINDOW)
-                .output();
+            // Create/refresh Startup Folder shortcut (.lnk) — works cleanly without admin rights
+            create_startup_lnk(&exe_path);
 
             reg_res
         } else {
             let _ = RegDeleteValueW(hkey, PCWSTR(value_name.as_ptr()));
+            remove_startup_lnk();
             let _ = std::process::Command::new("schtasks")
                 .args(["/Delete", "/TN", STARTUP_TASK_NAME, "/F"])
                 .creation_flags(CREATE_NO_WINDOW)

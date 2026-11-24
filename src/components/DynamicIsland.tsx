@@ -15,6 +15,7 @@ import {
 import { MediaTrack } from "../types/media";
 import { ThemeMode } from "../types/theme";
 import {
+  ActiveDownloadInfo,
   AudioDeviceInfo,
   BatteryInfo,
   ClipboardEntry,
@@ -26,7 +27,13 @@ import {
   VolumeInfo,
   WeatherInfo,
 } from "../types/system";
-import { formatAmPmTime, getIslandThemeTokens, playSoftChime } from "./island/helpers";
+import {
+  formatAmPmTime,
+  formatBytes,
+  formatSpeed,
+  getIslandThemeTokens,
+  playSoftChime,
+} from "./island/helpers";
 import { IdleBar } from "./island/IdleBar";
 import { ContextMenu } from "./island/ContextMenu";
 import { MusicTab } from "./island/MusicTab";
@@ -520,7 +527,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     } catch {}
   }, [isTauri]);
 
-  // 10. File Drop Shelf
+  // 10. File Drop Shelf, Native Drag-Out & Live Browser Downloads
   const [shelfFiles, setShelfFiles] = useState<ShelfFileInfo[]>(() => {
     try {
       const saved = localStorage.getItem("ms-island-shelf");
@@ -530,6 +537,8 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     }
   });
   const [isDragOver, setIsDragOver] = useState(false);
+  const [activeDownload, setActiveDownload] = useState<ActiveDownloadInfo | null>(null);
+  const isDraggingOutRef = useRef(false);
 
   useEffect(() => {
     localStorage.setItem("ms-island-shelf", JSON.stringify(shelfFiles));
@@ -539,11 +548,13 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     if (!isTauri) return;
     let unlistenDrag: (() => void) | undefined;
     let unlistenDrop: (() => void) | undefined;
-    import("@tauri-apps/api/event").then(({ listen }) => {
-      listen<boolean>("shelf-drag-state", (e) => setIsDragOver(e.payload)).then((fn) => {
-        unlistenDrag = fn;
-      });
-      listen<ShelfFileInfo[]>("shelf-files-dropped", (e) => {
+    let unlistenDlProgress: (() => void) | undefined;
+    let unlistenDlDone: (() => void) | undefined;
+    let unlistenHotkey: (() => void) | undefined;
+
+    import("@tauri-apps/api/event").then(async ({ listen }) => {
+      unlistenDrag = await listen<boolean>("shelf-drag-state", (e) => setIsDragOver(e.payload));
+      unlistenDrop = await listen<ShelfFileInfo[]>("shelf-files-dropped", (e) => {
         setIsDragOver(false);
         setShelfFiles((prev) => {
           const existing = new Set(prev.map((f) => f.path));
@@ -551,13 +562,32 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
         });
         setActiveTab("shelf");
         setIsHovered(true);
-      }).then((fn) => {
-        unlistenDrop = fn;
+      });
+      unlistenDlProgress = await listen<ActiveDownloadInfo | null>("downloads-updated", (e) => {
+        setActiveDownload(e.payload);
+      });
+      unlistenDlDone = await listen<ShelfFileInfo>("download-completed", (e) => {
+        const downloadedItem: ShelfFileInfo = { ...e.payload, fromDownload: true };
+        setShelfFiles((prev) => {
+          const filtered = prev.filter((f) => f.path !== downloadedItem.path);
+          return [downloadedItem, ...filtered].slice(0, 12);
+        });
+      });
+      unlistenHotkey = await listen("island-hotkey-toggle", () => {
+        setContextMenu(null);
+        setIsHovered((prev) => {
+          if (prev) setActiveTab("music");
+          return !prev;
+        });
       });
     });
+
     return () => {
       if (unlistenDrag) unlistenDrag();
       if (unlistenDrop) unlistenDrop();
+      if (unlistenDlProgress) unlistenDlProgress();
+      if (unlistenDlDone) unlistenDlDone();
+      if (unlistenHotkey) unlistenHotkey();
     };
   }, [isTauri]);
 
@@ -575,6 +605,22 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
       if (!isTauri) return;
       const { invoke } = await import("@tauri-apps/api/core");
       await invoke("reveal_shelf_file", { path });
+    },
+    [isTauri]
+  );
+
+  const handleDragOutShelfFile = useCallback(
+    async (path: string) => {
+      if (!isTauri || isDraggingOutRef.current) return;
+      isDraggingOutRef.current = true;
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("start_file_drag_out", { path });
+      } catch (e) {
+        console.error("OLE drag-out failed:", e);
+      } finally {
+        isDraggingOutRef.current = false;
+      }
     },
     [isTauri]
   );
@@ -756,12 +802,13 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   };
 
   const handleMouseLeave = () => {
-    if (contextMenu) return;
+    if (contextMenu || isDraggingOutRef.current) return;
     if (hoverEnterTimeoutRef.current) {
       clearTimeout(hoverEnterTimeoutRef.current);
       hoverEnterTimeoutRef.current = null;
     }
     hoverTimeoutRef.current = window.setTimeout(() => {
+      if (isDraggingOutRef.current) return;
       setIsHovered(false);
       setActiveTab("music");
     }, 260);
@@ -773,7 +820,11 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   const idleWidthPx = (() => {
     if (isDragOver) return 310;
     if (showVolumeHud) return 285;
-    if (toast) return Math.min(350, Math.max(255, Math.round(165 + toast.message.length * 6.5)));
+    if (toast) return Math.min(370, Math.max(255, Math.round(165 + toast.message.length * 6.5)));
+    if (activeDownload) {
+      const label = `${formatSpeed(activeDownload.speedBytesPerSec)} ${formatBytes(activeDownload.bytesDownloaded)} ${activeDownload.name}`;
+      return Math.min(475, Math.max(320, Math.round(205 + label.length * 6.2)));
+    }
     if (isTimerRunning || isTimerFinished) return 275;
     if (isStopwatchRunning) return 282;
     if (media.isPlaying) {
@@ -834,6 +885,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
             showVolumeHud={showVolumeHud}
             volume={volume}
             toast={toast}
+            activeDownload={activeDownload}
             isTimerRunning={isTimerRunning}
             isTimerFinished={isTimerFinished}
             timerRemaining={timerRemaining}
@@ -990,9 +1042,11 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
                 <ShelfTab
                   tokens={tokens}
                   files={shelfFiles}
+                  activeDownload={activeDownload}
                   isDragOver={isDragOver}
                   onOpenFile={handleOpenShelfFile}
                   onRevealFile={handleRevealShelfFile}
+                  onDragOutFile={handleDragOutShelfFile}
                   onRemoveFile={handleRemoveShelfFile}
                   onClearShelf={handleClearShelf}
                 />
