@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::os::windows::process::CommandExt;
 use windows::core::{GUID, HSTRING, PCWSTR};
 use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
-use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS, FILETIME, HWND, RECT};
+use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS, FILETIME, HWND, POINT, RECT};
 use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTOPRIMARY};
 use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
 use windows::Win32::Media::Audio::{
@@ -30,8 +30,8 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CAPITAL};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetClassNameW, GetForegroundWindow, GetWindowLongW, GetWindowRect, IsWindowVisible, GWL_STYLE,
-    WS_CAPTION, WS_THICKFRAME,
+    GetClassNameW, GetCursorPos, GetForegroundWindow, GetWindowLongW, GetWindowRect,
+    IsWindowVisible, GWL_STYLE, WS_CAPTION, WS_THICKFRAME,
 };
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -433,6 +433,25 @@ pub fn get_battery_info() -> BatteryInfo {
 
 pub fn is_caps_lock_on() -> bool {
     unsafe { (GetKeyState(VK_CAPITAL.0 as i32) & 1) != 0 }
+}
+
+/// Returns `(cursor_pos, window_top_left)` in physical screen pixels for smart click-through hit-testing.
+pub fn get_cursor_and_window_origin(hwnd_raw: isize) -> Option<((i32, i32), (i32, i32))> {
+    if hwnd_raw == 0 {
+        return None;
+    }
+    unsafe {
+        let mut pt = POINT::default();
+        if GetCursorPos(&mut pt).is_err() {
+            return None;
+        }
+        let mut rect = RECT::default();
+        let hwnd = HWND(hwnd_raw as *mut std::ffi::c_void);
+        if GetWindowRect(hwnd, &mut rect).is_err() {
+            return None;
+        }
+        Some(((pt.x, pt.y), (rect.left, rect.top)))
+    }
 }
 
 pub fn is_other_app_fullscreen(own_hwnds: &[isize]) -> bool {

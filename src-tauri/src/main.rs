@@ -35,6 +35,27 @@ struct IslandToast {
     message: String,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct IslandHitRect {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    full_window: bool,
+}
+
+impl Default for IslandHitRect {
+    fn default() -> Self {
+        Self {
+            x: 151.0,
+            y: 0.0,
+            width: 258.0,
+            height: 36.0,
+            full_window: false,
+        }
+    }
+}
+
 struct AppState {
     media_mgr: Arc<Mutex<MediaManager>>,
     cached_track: Arc<Mutex<Option<MediaTrackInfo>>>,
@@ -45,6 +66,7 @@ struct AppState {
     is_lyrics_open: Arc<Mutex<bool>>,
     clipboard_history: Arc<Mutex<ClipboardSyncPayload>>,
     auto_hide_fullscreen: Arc<AtomicBool>,
+    hit_rect: Arc<Mutex<IslandHitRect>>,
 }
 
 // -----------------------------------------------------------------------------
@@ -560,6 +582,24 @@ fn start_window_drag(window: tauri::WebviewWindow) {
     let _ = window.start_dragging();
 }
 
+#[tauri::command]
+fn set_island_hit_rect(
+    state: State<AppState>,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    full_window: bool,
+) {
+    *lock_safe(&state.hit_rect) = IslandHitRect {
+        x,
+        y,
+        width,
+        height,
+        full_window,
+    };
+}
+
 fn main() {
     // 0. Single-instance guard: if already running, wake & re-center the existing instance before exiting
     let _instance_guard = match system_tools::acquire_single_instance_mutex() {
@@ -585,6 +625,7 @@ fn main() {
         windows_history_enabled: false,
     }));
     let auto_hide_fullscreen = Arc::new(AtomicBool::new(true));
+    let hit_rect = Arc::new(Mutex::new(IslandHitRect::default()));
 
     let media_mgr_clone = media_mgr.clone();
     let cached_track_clone = cached_track.clone();
@@ -592,6 +633,7 @@ fn main() {
     let cached_lyrics_clone = cached_lyrics.clone();
     let clipboard_clone = clipboard_history.clone();
     let auto_hide_clone = auto_hide_fullscreen.clone();
+    let hit_rect_clone = hit_rect.clone();
     let own_hwnds_setup = Arc::new(Mutex::new(Vec::<isize>::new()));
 
     tauri::Builder::default()
@@ -605,6 +647,7 @@ fn main() {
             is_lyrics_open,
             clipboard_history,
             auto_hide_fullscreen,
+            hit_rect,
         })
         .invoke_handler(tauri::generate_handler![
             get_current_track,
@@ -644,7 +687,8 @@ fn main() {
             start_file_drag_out,
             reset_island_position,
             quit_app,
-            start_window_drag
+            start_window_drag,
+            set_island_hit_rect
         ])
         .setup(move |app| {
             let app_handle = app.handle().clone();
@@ -707,12 +751,20 @@ fn main() {
             }
 
             // 2. Position Main Window & Cache Native HWND ONCE on main thread
-            // (Lyrics window is lazy-created on demand to save ~45MB WebView2 RAM on startup!)
             center_island_on_primary_monitor(&app_handle);
+
+            let mut island_hwnd_raw: isize = 0;
+            let mut island_scale: f64 = 1.0;
 
             if let Some(island_win) = app.get_webview_window("island") {
                 if let Ok(h) = island_win.hwnd() {
-                    lock_safe(&own_hwnds_setup).push(h.0 as isize);
+                    island_hwnd_raw = h.0 as isize;
+                    lock_safe(&own_hwnds_setup).push(island_hwnd_raw);
+                }
+                if let Ok(sf) = island_win.scale_factor() {
+                    if sf > 0.0 {
+                        island_scale = sf;
+                    }
                 }
                 let _ = island_win.show();
 
@@ -1179,6 +1231,46 @@ fn main() {
                     );
                 });
             });
+
+            // 3F. Smart Native Click-Through Hit-Test (transparent area around idle pill passes all clicks through!)
+            if island_hwnd_raw != 0 {
+                let h_hit = app_handle.clone();
+                std::thread::spawn(move || {
+                    let mut last_ignore = false;
+                    let pad_px: i32 = (4.0 * island_scale).round() as i32;
+
+                    loop {
+                        std::thread::sleep(Duration::from_millis(25));
+
+                        let rect = *lock_safe(&hit_rect_clone);
+                        let should_ignore = if rect.full_window {
+                            false
+                        } else if let Some(((cx, cy), (wx, wy))) =
+                            system_tools::get_cursor_and_window_origin(island_hwnd_raw)
+                        {
+                            let left = wx + (rect.x * island_scale).floor() as i32 - pad_px;
+                            let top = wy + (rect.y * island_scale).floor() as i32 - pad_px;
+                            let right =
+                                wx + ((rect.x + rect.width) * island_scale).ceil() as i32 + pad_px;
+                            let bottom =
+                                wy + ((rect.y + rect.height) * island_scale).ceil() as i32 + pad_px;
+                            !(cx >= left && cx <= right && cy >= top && cy <= bottom)
+                        } else {
+                            false
+                        };
+
+                        if should_ignore != last_ignore {
+                            last_ignore = should_ignore;
+                            let h_ui = h_hit.clone();
+                            let _ = h_hit.run_on_main_thread(move || {
+                                if let Some(w) = h_ui.get_webview_window("island") {
+                                    let _ = w.set_ignore_cursor_events(should_ignore);
+                                }
+                            });
+                        }
+                    }
+                });
+            }
 
             Ok(())
         })

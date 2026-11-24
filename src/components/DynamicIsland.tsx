@@ -868,6 +868,29 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     return "h-[38px] rounded-full px-4 py-1.5 cursor-pointer";
   })();
 
+  // 15. Sync Exact Interactive Bounds to Rust for Zero-Flicker Transparent Click-Through
+  useEffect(() => {
+    if (!isTauri) return;
+    const width = isHovered ? 516 : idleWidthPx;
+    const height = isHovered ? 262 : dockEdge === "floating" ? 38 : 36;
+    const y = dockEdge === "top" ? 0 : 8;
+    const winW = window.innerWidth || 560;
+    const x =
+      dockEdge === "left"
+        ? 0
+        : dockEdge === "right"
+          ? Math.max(0, winW - width)
+          : Math.max(0, (winW - width) / 2);
+
+    invoke("set_island_hit_rect", {
+      x,
+      y,
+      width,
+      height,
+      fullWindow: Boolean(contextMenu || isDragOver || isMoving),
+    }).catch(() => {});
+  }, [isTauri, isHovered, idleWidthPx, dockEdge, contextMenu, isDragOver, isMoving]);
+
   const idleMediaProgress =
     !isHovered &&
     media.isPlaying &&
