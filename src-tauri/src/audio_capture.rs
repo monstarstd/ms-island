@@ -11,6 +11,7 @@ use windows::Win32::System::Com::{
 };
 
 const NUM_BANDS: usize = 8;
+const WINDOW_SIZE: usize = 256;
 const TARGET_FREQS: [f32; NUM_BANDS] = [70.0, 150.0, 320.0, 680.0, 1400.0, 2800.0, 5400.0, 9500.0];
 
 pub struct AudioSpectrumCapture {
@@ -23,13 +24,19 @@ impl AudioSpectrumCapture {
         let bands_bg = bands.clone();
 
         thread::spawn(move || {
+            // Precompute Hann window once (zero trig inside hot loop)
+            let mut hann = [0.0f32; WINDOW_SIZE];
+            let inv_n = 1.0 / (WINDOW_SIZE as f32);
+            for i in 0..WINDOW_SIZE {
+                hann[i] = 0.5 * (1.0 - (2.0 * PI * (i as f32) * inv_n).cos());
+            }
+
             loop {
-                let _ = unsafe { run_loopback_session(&bands_bg) };
-                // Decay to zero if capture restarts (e.g. audio device switched)
+                let _ = unsafe { run_loopback_session(&bands_bg, &hann) };
                 if let Ok(mut b) = bands_bg.lock() {
                     *b = [0.0; NUM_BANDS];
                 }
-                thread::sleep(Duration::from_millis(800));
+                thread::sleep(Duration::from_millis(1200));
             }
         });
 
@@ -41,26 +48,26 @@ impl AudioSpectrumCapture {
     }
 }
 
-/// Computes energy at 8 logarithmically spaced frequencies using the Goertzel algorithm
-fn compute_goertzel_bands(samples: &[f32], sample_rate: f32) -> [f32; NUM_BANDS] {
-    let n = samples.len().min(512);
-    if n < 32 || sample_rate <= 0.0 {
+fn compute_goertzel_bands(
+    samples: &[f32],
+    coeffs: &[f32; NUM_BANDS],
+    hann: &[f32; WINDOW_SIZE],
+) -> [f32; NUM_BANDS] {
+    let n = samples.len().min(WINDOW_SIZE);
+    if n < 32 {
         return [0.0; NUM_BANDS];
     }
 
     let mut out = [0.0f32; NUM_BANDS];
     let inv_n = 1.0 / (n as f32);
 
-    for (band_idx, &freq) in TARGET_FREQS.iter().enumerate() {
-        let omega = 2.0 * PI * freq / sample_rate;
-        let coeff = 2.0 * omega.cos();
+    for band_idx in 0..NUM_BANDS {
+        let coeff = coeffs[band_idx];
         let mut s_prev = 0.0f32;
         let mut s_prev2 = 0.0f32;
 
         for i in 0..n {
-            // Hann window to avoid spectral leakage
-            let w = 0.5 * (1.0 - (2.0 * PI * (i as f32) * inv_n).cos());
-            let s = samples[i] * w + coeff * s_prev - s_prev2;
+            let s = samples[i] * hann[i] + coeff * s_prev - s_prev2;
             s_prev2 = s_prev;
             s_prev = s;
         }
@@ -68,16 +75,17 @@ fn compute_goertzel_bands(samples: &[f32], sample_rate: f32) -> [f32; NUM_BANDS]
         let power = (s_prev2 * s_prev2 + s_prev * s_prev - coeff * s_prev * s_prev2).max(0.0);
         let mag = power.sqrt() * inv_n * 2.0;
 
-        // Perceptual frequency boost (higher frequencies naturally have lower amplitude in music)
         let boost = 4.2 + (band_idx as f32) * 1.15;
-        let normalized = (mag * boost).powf(0.72).clamp(0.0, 1.0);
-        out[band_idx] = normalized;
+        out[band_idx] = (mag * boost).powf(0.72).clamp(0.0, 1.0);
     }
 
     out
 }
 
-unsafe fn run_loopback_session(bands: &Arc<Mutex<[f32; NUM_BANDS]>>) -> windows::core::Result<()> {
+unsafe fn run_loopback_session(
+    bands: &Arc<Mutex<[f32; NUM_BANDS]>>,
+    hann: &[f32; WINDOW_SIZE],
+) -> windows::core::Result<()> {
     let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
 
     let enumerator: IMMDeviceEnumerator =
@@ -94,8 +102,16 @@ unsafe fn run_loopback_session(bands: &Arc<Mutex<[f32; NUM_BANDS]>>) -> windows:
     let channels = (*mix_format_ptr).nChannels.max(1) as usize;
     let bits_per_sample = (*mix_format_ptr).wBitsPerSample;
 
-    // 50ms buffer duration (in 100ns units)
-    let hns_duration = 500_000i64;
+    // Precompute Goertzel coefficients for this device's sample rate
+    let mut coeffs = [0.0f32; NUM_BANDS];
+    if sample_rate > 0.0 {
+        for (i, &freq) in TARGET_FREQS.iter().enumerate() {
+            let omega = 2.0 * PI * freq / sample_rate;
+            coeffs[i] = 2.0 * omega.cos();
+        }
+    }
+
+    let hns_duration = 600_000i64; // 60ms buffer
     let init_res = audio_client.Initialize(
         AUDCLNT_SHAREMODE_SHARED,
         AUDCLNT_STREAMFLAGS_LOOPBACK,
@@ -110,12 +126,12 @@ unsafe fn run_loopback_session(bands: &Arc<Mutex<[f32; NUM_BANDS]>>) -> windows:
     let capture_client: IAudioCaptureClient = audio_client.GetService()?;
     audio_client.Start()?;
 
-    let mut mono_buf: Vec<f32> = Vec::with_capacity(1024);
+    let mut mono_buf: Vec<f32> = Vec::with_capacity(WINDOW_SIZE);
     let mut smoothed = [0.0f32; NUM_BANDS];
     let mut idle_ticks = 0u32;
 
     loop {
-        thread::sleep(Duration::from_millis(28));
+        thread::sleep(Duration::from_millis(45));
 
         let mut packet_length = match capture_client.GetNextPacketSize() {
             Ok(len) => len,
@@ -124,20 +140,23 @@ unsafe fn run_loopback_session(bands: &Arc<Mutex<[f32; NUM_BANDS]>>) -> windows:
 
         if packet_length == 0 {
             idle_ticks += 1;
-            // Gently decay bars to zero during silence
             if idle_ticks > 2 {
+                let mut any_nonzero = false;
                 for v in smoothed.iter_mut() {
-                    *v *= 0.72;
+                    *v *= 0.7;
                     if *v < 0.01 {
                         *v = 0.0;
+                    } else {
+                        any_nonzero = true;
                     }
                 }
-                if let Ok(mut b) = bands.lock() {
-                    *b = smoothed;
+                if any_nonzero || idle_ticks == 3 {
+                    if let Ok(mut b) = bands.lock() {
+                        *b = smoothed;
+                    }
                 }
             }
-            // Periodically check if default audio endpoint changed (every ~3s of silence)
-            if idle_ticks > 110 {
+            if idle_ticks > 90 {
                 break;
             }
             continue;
@@ -160,31 +179,24 @@ unsafe fn run_loopback_session(bands: &Arc<Mutex<[f32; NUM_BANDS]>>) -> windows:
             }
 
             let is_silent = (flags & (AUDCLNT_BUFFERFLAGS_SILENT.0 as u32)) != 0;
-            if !is_silent && !data_ptr.is_null() && num_frames > 0 {
-                let frame_count = num_frames as usize;
+            if !is_silent && !data_ptr.is_null() && num_frames > 0 && mono_buf.len() < WINDOW_SIZE {
+                let frame_count = (num_frames as usize).min(WINDOW_SIZE - mono_buf.len());
                 if bits_per_sample == 32 {
-                    let floats = std::slice::from_raw_parts(
-                        data_ptr as *const f32,
-                        frame_count * channels,
-                    );
+                    let stride = channels * 4;
                     for f in 0..frame_count {
-                        let mut sum = 0.0f32;
-                        for c in 0..channels {
-                            sum += floats[f * channels + c];
+                        let base = data_ptr.add(f * stride);
+                        // Use read_unaligned so misaligned WASAPI buffers never panic
+                        let sample = std::ptr::read_unaligned(base as *const f32);
+                        if sample.is_finite() {
+                            mono_buf.push(sample.clamp(-1.0, 1.0));
                         }
-                        mono_buf.push(sum / (channels as f32));
                     }
                 } else if bits_per_sample == 16 {
-                    let ints = std::slice::from_raw_parts(
-                        data_ptr as *const i16,
-                        frame_count * channels,
-                    );
+                    let stride = channels * 2;
                     for f in 0..frame_count {
-                        let mut sum = 0.0f32;
-                        for c in 0..channels {
-                            sum += (ints[f * channels + c] as f32) / 32768.0;
-                        }
-                        mono_buf.push(sum / (channels as f32));
+                        let base = data_ptr.add(f * stride);
+                        let sample = std::ptr::read_unaligned(base as *const i16);
+                        mono_buf.push((sample as f32) / 32768.0);
                     }
                 }
             }
@@ -194,18 +206,17 @@ unsafe fn run_loopback_session(bands: &Arc<Mutex<[f32; NUM_BANDS]>>) -> windows:
         }
 
         if !mono_buf.is_empty() {
-            let raw = compute_goertzel_bands(&mono_buf, sample_rate);
+            let raw = compute_goertzel_bands(&mono_buf, &coeffs, hann);
             for i in 0..NUM_BANDS {
-                // Fast attack, smooth decay for tactile hardware feel
                 if raw[i] > smoothed[i] {
                     smoothed[i] = smoothed[i] * 0.35 + raw[i] * 0.65;
                 } else {
-                    smoothed[i] = smoothed[i] * 0.75 + raw[i] * 0.25;
+                    smoothed[i] = smoothed[i] * 0.72 + raw[i] * 0.28;
                 }
             }
         } else {
             for v in smoothed.iter_mut() {
-                *v *= 0.72;
+                *v *= 0.7;
             }
         }
 

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { DynamicIsland } from "./components/DynamicIsland";
 import { FullLyricsWindow } from "./components/FullLyricsWindow";
 import { MediaTrack } from "./types/media";
@@ -10,6 +10,7 @@ const EMPTY_TRACK: MediaTrack = {
   album: "",
   sourceApp: "YouTube",
   thumbnail: undefined,
+  thumbId: null,
   isPlaying: false,
   positionSec: 0,
   durationSec: 0
@@ -29,6 +30,9 @@ export const App: React.FC = () => {
     return (saved === "light" || saved === "dark") ? saved : "dark";
   });
 
+  const lastThumbIdRef = useRef<string | null>(null);
+  const cachedThumbDataRef = useRef<string | undefined>(undefined);
+
   // Detect which window this is in Tauri
   useEffect(() => {
     const isTauri = !!(window as any).__TAURI_INTERNALS__;
@@ -41,32 +45,84 @@ export const App: React.FC = () => {
           console.error("Failed to get window label", e);
         }
       });
-    } else {
-      const queryParams = new URLSearchParams(window.location.search);
-      const hashMode = window.location.hash.replace("#", "");
-      setWindowMode(queryParams.get("mode") || hashMode || "island");
     }
   }, []);
 
-  // Listen to instantaneous theme changes across webviews
+  // Listen to theme, lyrics visibility, lyrics text, and lightweight media events
   useEffect(() => {
     const isTauri = !!(window as any).__TAURI_INTERNALS__;
     if (!isTauri) return;
 
-    let unlisten: (() => void) | undefined;
-    import("@tauri-apps/api/event").then(({ listen }) => {
-      listen<ThemeMode>("theme-changed", (event) => {
+    let unlisteners: Array<() => void> = [];
+    let isMounted = true;
+
+    const applyTrackUpdate = async (track: MediaTrack) => {
+      if (!isMounted || !track || !track.title) return;
+
+      // Only fetch base64 album cover artwork ONCE when thumbId actually changes!
+      const incomingThumbId = track.thumbId || null;
+      if (incomingThumbId && incomingThumbId !== lastThumbIdRef.current) {
+        lastThumbIdRef.current = incomingThumbId;
+        try {
+          const { invoke } = await import("@tauri-apps/api/core");
+          const dataUrl = await invoke<string | null>("get_current_thumbnail");
+          cachedThumbDataRef.current = dataUrl || undefined;
+        } catch {
+          cachedThumbDataRef.current = undefined;
+        }
+      } else if (!incomingThumbId) {
+        lastThumbIdRef.current = null;
+        cachedThumbDataRef.current = undefined;
+      }
+
+      if (isMounted) {
+        setMedia({
+          ...track,
+          thumbnail: cachedThumbDataRef.current,
+        });
+      }
+    };
+
+    import("@tauri-apps/api/event").then(async ({ listen }) => {
+      const u1 = await listen<ThemeMode>("theme-changed", (event) => {
         if (event.payload === "dark" || event.payload === "light") {
           setTheme(event.payload);
           localStorage.setItem("ms-island-theme", event.payload);
         }
-      }).then(fn => {
-        unlisten = fn;
       });
+      const u2 = await listen<boolean>("lyrics-visibility-changed", (event) => {
+        setIsLyricsOpen(event.payload);
+      });
+      const u3 = await listen<string>("lyrics-updated", (event) => {
+        setLyricsText(event.payload);
+      });
+      const u4 = await listen<MediaTrack>("media-updated", (event) => {
+        applyTrackUpdate(event.payload);
+      });
+      unlisteners = [u1, u2, u3, u4];
+    });
+
+    // Initial state hydration (runs once, no heavy polling!)
+    import("@tauri-apps/api/core").then(async ({ invoke }) => {
+      try {
+        const [track, fullLyrics, isOpen] = await Promise.all([
+          invoke<MediaTrack | null>("get_current_track"),
+          invoke<string>("get_full_lyrics"),
+          invoke<boolean>("is_lyrics_window_open"),
+        ]);
+        if (isMounted) {
+          if (track) await applyTrackUpdate(track);
+          if (fullLyrics) setLyricsText(fullLyrics);
+          setIsLyricsOpen(isOpen);
+        }
+      } catch (err) {
+        console.error("Failed initial state hydration:", err);
+      }
     });
 
     return () => {
-      if (unlisten) unlisten();
+      isMounted = false;
+      unlisteners.forEach((fn) => fn());
     };
   }, []);
 
@@ -83,70 +139,9 @@ export const App: React.FC = () => {
     }
   };
 
-  // Listen to instantaneous window visibility changes across both webviews
-  useEffect(() => {
-    const isTauri = !!(window as any).__TAURI_INTERNALS__;
-    if (!isTauri) return;
-
-    let unlisten: (() => void) | undefined;
-    import("@tauri-apps/api/event").then(({ listen }) => {
-      listen<boolean>("lyrics-visibility-changed", (event) => {
-        setIsLyricsOpen(event.payload);
-      }).then(fn => {
-        unlisten = fn;
-      });
-    });
-
-    return () => {
-      if (unlisten) unlisten();
-    };
-  }, []);
-
-  // Real-time synchronization loop with Windows SMTC, Lyric Engine & Window Status
-  useEffect(() => {
-    const isTauri = !!(window as any).__TAURI_INTERNALS__;
-    if (!isTauri) return;
-
-    let isMounted = true;
-
-    const pollMedia = async () => {
-      try {
-        const { invoke } = await import("@tauri-apps/api/core");
-        
-        // 1. Current media track
-        const track = await invoke<MediaTrack | null>("get_current_track");
-        if (isMounted && track && track.title) {
-          setMedia(track);
-        }
-
-        // 2. Lyrics
-        const fullLyrics = await invoke<string>("get_full_lyrics");
-        if (isMounted && fullLyrics) {
-          setLyricsText(fullLyrics);
-        }
-
-        // 3. Lyrics Window open/close sync
-        const isOpen = await invoke<boolean>("is_lyrics_window_open");
-        if (isMounted) {
-          setIsLyricsOpen(isOpen);
-        }
-      } catch (err) {
-        console.error("Failed to poll track or lyrics:", err);
-      }
-    };
-
-    pollMedia();
-    const interval = setInterval(pollMedia, 500);
-
-    return () => {
-      isMounted = false;
-      clearInterval(interval);
-    };
-  }, []);
-
   // Playback Control Handlers
   const handleTogglePlayPause = async () => {
-    setMedia(prev => ({ ...prev, isPlaying: !prev.isPlaying }));
+    setMedia((prev) => ({ ...prev, isPlaying: !prev.isPlaying }));
     const isTauri = !!(window as any).__TAURI_INTERNALS__;
     if (isTauri) {
       try {
@@ -183,7 +178,7 @@ export const App: React.FC = () => {
   };
 
   const handleSeek = async (positionSec: number) => {
-    setMedia(prev => ({ ...prev, positionSec: Math.floor(positionSec) }));
+    setMedia((prev) => ({ ...prev, positionSec: Math.floor(positionSec) }));
     const isTauri = !!(window as any).__TAURI_INTERNALS__;
     if (isTauri) {
       try {
@@ -206,7 +201,7 @@ export const App: React.FC = () => {
         console.error("Failed to toggle lyrics window:", e);
       }
     } else {
-      setIsLyricsOpen(prev => !prev);
+      setIsLyricsOpen((prev) => !prev);
     }
   };
 
@@ -241,7 +236,11 @@ export const App: React.FC = () => {
   };
 
   return (
-    <div className={`w-screen h-screen flex flex-col justify-between overflow-hidden bg-transparent ${theme === "light" ? "light" : "dark"}`}>
+    <div
+      className={`w-screen h-screen flex flex-col justify-between overflow-hidden bg-transparent ${
+        theme === "light" ? "light" : "dark"
+      }`}
+    >
       {/* 1. Dynamic Island Window */}
       {windowMode === "island" && (
         <div className="w-full flex justify-center pt-0 z-50">

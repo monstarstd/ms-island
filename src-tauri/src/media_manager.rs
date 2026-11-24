@@ -12,7 +12,8 @@ pub struct MediaTrackInfo {
     pub title: String,
     pub artist: String,
     pub album: String,
-    pub thumbnail: Option<String>,
+    #[serde(rename = "thumbId")]
+    pub thumb_id: Option<String>,
     #[serde(rename = "sourceApp")]
     pub source_app: String,
     #[serde(rename = "isPlaying")]
@@ -53,7 +54,8 @@ fn base64_encode(input: &[u8]) -> String {
 fn extract_thumbnail_data_url(thumb_ref: &IRandomAccessStreamReference) -> Option<String> {
     let stream = thumb_ref.OpenReadAsync().ok()?.get().ok()?;
     let size = stream.Size().ok()?;
-    if size == 0 || size > 4 * 1024 * 1024 {
+    // Guard against oversized raw bitmaps to keep IPC instant
+    if size == 0 || size > 1_500_000 {
         return None;
     }
     let size_u32 = size as u32;
@@ -66,7 +68,12 @@ fn extract_thumbnail_data_url(thumb_ref: &IRandomAccessStreamReference) -> Optio
     let mut bytes = vec![0u8; loaded as usize];
     reader.ReadBytes(&mut bytes).ok()?;
 
-    let mime = if bytes.len() >= 4 && bytes[0] == 0x89 && bytes[1] == 0x50 && bytes[2] == 0x4E && bytes[3] == 0x47 {
+    let mime = if bytes.len() >= 4
+        && bytes[0] == 0x89
+        && bytes[1] == 0x50
+        && bytes[2] == 0x4E
+        && bytes[3] == 0x47
+    {
         "image/png"
     } else if bytes.len() >= 4 && &bytes[0..4] == b"RIFF" {
         "image/webp"
@@ -81,6 +88,7 @@ pub struct MediaManager {
     manager: Option<GlobalSystemMediaTransportControlsSessionManager>,
     cached_thumb_key: String,
     cached_thumb_data: Option<String>,
+    thumb_retry_count: u8,
 }
 
 impl MediaManager {
@@ -89,6 +97,7 @@ impl MediaManager {
             manager: None,
             cached_thumb_key: String::new(),
             cached_thumb_data: None,
+            thumb_retry_count: 0,
         }
     }
 
@@ -110,6 +119,10 @@ impl MediaManager {
             return None;
         }
         self.manager.as_ref()?.GetCurrentSession().ok()
+    }
+
+    pub fn get_cached_thumbnail(&self) -> Option<String> {
+        self.cached_thumb_data.clone()
     }
 
     pub fn get_current_track_info(&mut self) -> Option<MediaTrackInfo> {
@@ -135,16 +148,17 @@ impl MediaManager {
         let artist = media_props.as_ref().and_then(|p| p.Artist().ok()).map(|s| s.to_string()).unwrap_or_default();
         let album = media_props.as_ref().and_then(|p| p.AlbumTitle().ok()).map(|s| s.to_string()).unwrap_or_default();
 
-        // Extract and cache real album cover artwork per track
+        // Extract and cache album cover art ONCE per track (with at most 2 retries if delayed)
         let thumb_key = format!("{}|{}", title, artist);
         if thumb_key != self.cached_thumb_key {
-            self.cached_thumb_key = thumb_key;
+            self.cached_thumb_key = thumb_key.clone();
+            self.thumb_retry_count = 0;
             self.cached_thumb_data = media_props
                 .as_ref()
                 .and_then(|p| p.Thumbnail().ok())
                 .and_then(|t| extract_thumbnail_data_url(&t));
-        } else if self.cached_thumb_data.is_none() && !title.is_empty() {
-            // Retry once if YouTube loaded thumbnail slightly after title update
+        } else if self.cached_thumb_data.is_none() && !title.is_empty() && self.thumb_retry_count < 2 {
+            self.thumb_retry_count += 1;
             if let Some(data) = media_props
                 .as_ref()
                 .and_then(|p| p.Thumbnail().ok())
@@ -190,7 +204,11 @@ impl MediaManager {
             title,
             artist,
             album,
-            thumbnail: self.cached_thumb_data.clone(),
+            thumb_id: if self.cached_thumb_data.is_some() {
+                Some(self.cached_thumb_key.clone())
+            } else {
+                None
+            },
             source_app,
             is_playing,
             position_sec,

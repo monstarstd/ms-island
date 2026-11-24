@@ -29,6 +29,8 @@ struct IslandToast {
 
 struct AppState {
     media_mgr: Arc<Mutex<MediaManager>>,
+    cached_track: Arc<Mutex<Option<MediaTrackInfo>>>,
+    cached_thumbnail: Arc<Mutex<Option<String>>>,
     sys_monitor: Arc<Mutex<SystemMonitor>>,
     audio_spectrum: Arc<AudioSpectrumCapture>,
     cached_lyrics: Arc<Mutex<String>>,
@@ -37,21 +39,28 @@ struct AppState {
     auto_hide_fullscreen: Arc<AtomicBool>,
 }
 
+// -----------------------------------------------------------------------------
+// Fast Non-Blocking Cache Reads (NEVER block Main UI Thread!)
+// -----------------------------------------------------------------------------
+
 #[tauri::command]
-fn get_current_track(state: State<AppState>) -> Option<MediaTrackInfo> {
-    let mut mgr = state.media_mgr.lock().unwrap();
-    mgr.get_current_track_info()
+async fn get_current_track(state: State<'_, AppState>) -> Result<Option<MediaTrackInfo>, ()> {
+    Ok(state.cached_track.lock().unwrap().clone())
 }
 
 #[tauri::command]
-fn get_audio_spectrum(state: State<AppState>) -> [f32; 8] {
-    state.audio_spectrum.get_bands()
+async fn get_current_thumbnail(state: State<'_, AppState>) -> Result<Option<String>, ()> {
+    Ok(state.cached_thumbnail.lock().unwrap().clone())
 }
 
 #[tauri::command]
-fn get_full_lyrics(state: State<AppState>) -> String {
-    let lyrics_lock = state.cached_lyrics.lock().unwrap();
-    lyrics_lock.clone()
+async fn get_audio_spectrum(state: State<'_, AppState>) -> Result<[f32; 8], ()> {
+    Ok(state.audio_spectrum.get_bands())
+}
+
+#[tauri::command]
+async fn get_full_lyrics(state: State<'_, AppState>) -> Result<String, ()> {
+    Ok(state.cached_lyrics.lock().unwrap().clone())
 }
 
 #[tauri::command]
@@ -171,73 +180,130 @@ fn set_lyrics_always_on_top(app: AppHandle, pinned: bool) -> bool {
     pinned
 }
 
-#[tauri::command]
-fn toggle_play_pause(state: State<AppState>) -> bool {
-    let mut mgr = state.media_mgr.lock().unwrap();
-    mgr.toggle_play_pause()
-}
-
-#[tauri::command]
-fn skip_next(state: State<AppState>) -> bool {
-    let mut mgr = state.media_mgr.lock().unwrap();
-    mgr.skip_next()
-}
-
-#[tauri::command]
-fn skip_prev(state: State<AppState>) -> bool {
-    let mut mgr = state.media_mgr.lock().unwrap();
-    mgr.skip_prev()
-}
-
-#[tauri::command]
-fn seek_position(state: State<AppState>, position_sec: u64) -> bool {
-    let mut mgr = state.media_mgr.lock().unwrap();
-    mgr.seek_position(position_sec)
-}
-
 // -----------------------------------------------------------------------------
-// Volume, Audio Output Switcher, System Monitor, Battery, Clipboard & Shelf
+// Async Media Transport & Win32/COM Commands (Offloaded to MTA worker pool!)
 // -----------------------------------------------------------------------------
 
 #[tauri::command]
-fn get_volume() -> VolumeInfo {
-    system_tools::get_volume_info()
+async fn toggle_play_pause(state: State<'_, AppState>) -> Result<bool, ()> {
+    let mgr = state.media_mgr.clone();
+    Ok(tokio::task::spawn_blocking(move || mgr.lock().unwrap().toggle_play_pause())
+        .await
+        .unwrap_or(false))
 }
 
 #[tauri::command]
-fn set_volume(level: u8) -> VolumeInfo {
-    system_tools::set_volume_level(level)
+async fn skip_next(state: State<'_, AppState>) -> Result<bool, ()> {
+    let mgr = state.media_mgr.clone();
+    Ok(tokio::task::spawn_blocking(move || mgr.lock().unwrap().skip_next())
+        .await
+        .unwrap_or(false))
 }
 
 #[tauri::command]
-fn adjust_volume(delta: i8) -> VolumeInfo {
-    system_tools::adjust_volume_delta(delta)
+async fn skip_prev(state: State<'_, AppState>) -> Result<bool, ()> {
+    let mgr = state.media_mgr.clone();
+    Ok(tokio::task::spawn_blocking(move || mgr.lock().unwrap().skip_prev())
+        .await
+        .unwrap_or(false))
 }
 
 #[tauri::command]
-fn toggle_mute() -> VolumeInfo {
-    system_tools::toggle_volume_mute()
+async fn seek_position(state: State<'_, AppState>, position_sec: u64) -> Result<bool, ()> {
+    let mgr = state.media_mgr.clone();
+    Ok(
+        tokio::task::spawn_blocking(move || mgr.lock().unwrap().seek_position(position_sec))
+            .await
+            .unwrap_or(false),
+    )
 }
 
 #[tauri::command]
-fn get_audio_devices() -> Vec<AudioDeviceInfo> {
-    system_tools::list_audio_output_devices()
+async fn get_volume() -> Result<VolumeInfo, ()> {
+    Ok(tokio::task::spawn_blocking(system_tools::get_volume_info)
+        .await
+        .unwrap_or(VolumeInfo {
+            level: 50,
+            muted: false,
+        }))
 }
 
 #[tauri::command]
-fn switch_audio_device(device_id: String) -> Result<bool, String> {
-    system_tools::set_default_audio_device(&device_id)
+async fn set_volume(level: u8) -> Result<VolumeInfo, ()> {
+    Ok(
+        tokio::task::spawn_blocking(move || system_tools::set_volume_level(level))
+            .await
+            .unwrap_or(VolumeInfo {
+                level,
+                muted: false,
+            }),
+    )
 }
 
 #[tauri::command]
-fn get_system_stats(state: State<AppState>) -> SystemStats {
-    let mut mon = state.sys_monitor.lock().unwrap();
-    mon.get_stats()
+async fn adjust_volume(delta: i8) -> Result<VolumeInfo, ()> {
+    Ok(
+        tokio::task::spawn_blocking(move || system_tools::adjust_volume_delta(delta))
+            .await
+            .unwrap_or(VolumeInfo {
+                level: 50,
+                muted: false,
+            }),
+    )
 }
 
 #[tauri::command]
-fn get_battery_info() -> BatteryInfo {
-    system_tools::get_battery_info()
+async fn toggle_mute() -> Result<VolumeInfo, ()> {
+    Ok(
+        tokio::task::spawn_blocking(system_tools::toggle_volume_mute)
+            .await
+            .unwrap_or(VolumeInfo {
+                level: 50,
+                muted: false,
+            }),
+    )
+}
+
+#[tauri::command]
+async fn get_audio_devices() -> Result<Vec<AudioDeviceInfo>, ()> {
+    Ok(
+        tokio::task::spawn_blocking(system_tools::list_audio_output_devices)
+            .await
+            .unwrap_or_default(),
+    )
+}
+
+#[tauri::command]
+async fn switch_audio_device(device_id: String) -> Result<bool, String> {
+    tokio::task::spawn_blocking(move || system_tools::set_default_audio_device(&device_id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn get_system_stats(state: State<'_, AppState>) -> Result<SystemStats, ()> {
+    let mon = state.sys_monitor.clone();
+    Ok(
+        tokio::task::spawn_blocking(move || mon.lock().unwrap().get_stats())
+            .await
+            .unwrap_or(SystemStats {
+                cpu_percent: 0.0,
+                ram_percent: 0.0,
+                ram_used_gb: 0.0,
+                ram_total_gb: 0.0,
+            }),
+    )
+}
+
+#[tauri::command]
+async fn get_battery_info() -> Result<BatteryInfo, ()> {
+    Ok(tokio::task::spawn_blocking(system_tools::get_battery_info)
+        .await
+        .unwrap_or(BatteryInfo {
+            has_battery: false,
+            percent: 100,
+            is_charging: true,
+        }))
 }
 
 #[tauri::command]
@@ -246,13 +312,19 @@ async fn get_weather(city: Option<String>) -> Result<WeatherInfo, String> {
 }
 
 #[tauri::command]
-fn get_autostart() -> bool {
-    system_tools::is_autostart_enabled()
+async fn get_autostart() -> Result<bool, ()> {
+    Ok(
+        tokio::task::spawn_blocking(system_tools::is_autostart_enabled)
+            .await
+            .unwrap_or(false),
+    )
 }
 
 #[tauri::command]
-fn set_autostart(enabled: bool) -> Result<bool, String> {
-    system_tools::set_autostart_enabled(enabled)
+async fn set_autostart(enabled: bool) -> Result<bool, String> {
+    tokio::task::spawn_blocking(move || system_tools::set_autostart_enabled(enabled))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -272,13 +344,17 @@ fn set_auto_hide_fullscreen(app: AppHandle, state: State<AppState>, enabled: boo
 }
 
 #[tauri::command]
-fn get_clipboard_history(state: State<AppState>) -> Vec<ClipboardEntry> {
-    state.clipboard_history.lock().unwrap().clone()
+async fn get_clipboard_history(state: State<'_, AppState>) -> Result<Vec<ClipboardEntry>, ()> {
+    Ok(state.clipboard_history.lock().unwrap().clone())
 }
 
 #[tauri::command]
-fn copy_clipboard_item(text: String) -> bool {
-    system_tools::write_clipboard_text(&text)
+async fn copy_clipboard_item(text: String) -> Result<bool, ()> {
+    Ok(
+        tokio::task::spawn_blocking(move || system_tools::write_clipboard_text(&text))
+            .await
+            .unwrap_or(false),
+    )
 }
 
 #[tauri::command]
@@ -287,13 +363,21 @@ fn clear_clipboard_history(state: State<AppState>) {
 }
 
 #[tauri::command]
-fn open_shelf_file(path: String) -> bool {
-    system_tools::open_file_path(&path)
+async fn open_shelf_file(path: String) -> Result<bool, ()> {
+    Ok(
+        tokio::task::spawn_blocking(move || system_tools::open_file_path(&path))
+            .await
+            .unwrap_or(false),
+    )
 }
 
 #[tauri::command]
-fn reveal_shelf_file(path: String) -> bool {
-    system_tools::reveal_file_in_explorer(&path)
+async fn reveal_shelf_file(path: String) -> Result<bool, ()> {
+    Ok(
+        tokio::task::spawn_blocking(move || system_tools::reveal_file_in_explorer(&path))
+            .await
+            .unwrap_or(false),
+    )
 }
 
 #[tauri::command]
@@ -307,7 +391,6 @@ fn start_window_drag(window: tauri::WebviewWindow) {
 }
 
 fn format_local_hhmm() -> String {
-    // Simple local-ish short tag for clipboard entries
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -317,6 +400,8 @@ fn format_local_hhmm() -> String {
 
 fn main() {
     let media_mgr = Arc::new(Mutex::new(MediaManager::new()));
+    let cached_track = Arc::new(Mutex::new(None::<MediaTrackInfo>));
+    let cached_thumbnail = Arc::new(Mutex::new(None::<String>));
     let sys_monitor = Arc::new(Mutex::new(SystemMonitor::new()));
     let audio_spectrum = Arc::new(AudioSpectrumCapture::start());
     let cached_lyrics = Arc::new(Mutex::new(String::new()));
@@ -325,6 +410,8 @@ fn main() {
     let auto_hide_fullscreen = Arc::new(AtomicBool::new(true));
 
     let media_mgr_clone = media_mgr.clone();
+    let cached_track_clone = cached_track.clone();
+    let cached_thumb_clone = cached_thumbnail.clone();
     let cached_lyrics_clone = cached_lyrics.clone();
     let clipboard_clone = clipboard_history.clone();
     let auto_hide_clone = auto_hide_fullscreen.clone();
@@ -332,6 +419,8 @@ fn main() {
     tauri::Builder::default()
         .manage(AppState {
             media_mgr,
+            cached_track,
+            cached_thumbnail,
             sys_monitor,
             audio_spectrum,
             cached_lyrics,
@@ -341,6 +430,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             get_current_track,
+            get_current_thumbnail,
             get_audio_spectrum,
             get_full_lyrics,
             is_lyrics_window_open,
@@ -432,12 +522,16 @@ fn main() {
                 }
             }
 
-            // 2. Position Windows & Bind Native Events
+            // 2. Position Windows & Cache Native HWNDs ONCE on main thread
+            let mut own_hwnds: Vec<isize> = Vec::new();
             center_island_on_primary_monitor(&app_handle);
+
             if let Some(island_win) = app.get_webview_window("island") {
+                if let Ok(h) = island_win.hwnd() {
+                    own_hwnds.push(h.0 as isize);
+                }
                 let _ = island_win.show();
 
-                // Native Drag & Drop File Shelf listener
                 let handle_drop = app_handle.clone();
                 island_win.on_window_event(move |event| {
                     if let WindowEvent::DragDrop(dd) = event {
@@ -470,6 +564,9 @@ fn main() {
                 let screen_h = screen_size.height as i32;
 
                 if let Some(lyrics_win) = app.get_webview_window("lyrics") {
+                    if let Ok(h) = lyrics_win.hwnd() {
+                        own_hwnds.push(h.0 as isize);
+                    }
                     let lyrics_w = lyrics_win
                         .outer_size()
                         .map(|s| s.width as i32)
@@ -479,7 +576,7 @@ fn main() {
                         .map(|s| s.height as i32)
                         .unwrap_or(580);
                     let lyrics_x = (screen_w - lyrics_w - 40).max(0);
-                    let lyrics_y = ((screen_h - lyrics_h) / 2).max(0);
+                    let lyrics_y = ((screen_h - lyrics_h) / 2).max(40);
                     let _ = lyrics_win.set_position(tauri::Position::Physical(
                         tauri::PhysicalPosition {
                             x: lyrics_x,
@@ -488,7 +585,6 @@ fn main() {
                     ));
                     let _ = lyrics_win.hide();
 
-                    // Intercept OS/Alt+F4 close so the lyrics window is hidden, never destroyed
                     let lyrics_win_clone = lyrics_win.clone();
                     let app_handle_close = app_handle.clone();
                     lyrics_win.on_window_event(move |event| {
@@ -504,9 +600,9 @@ fn main() {
                 }
             }
 
-            // 3. Background Loop: Media, Lyrics, Clipboard, CapsLock, Battery & Fullscreen Auto-Hide
+            // 3. Dedicated Background OS Thread (MTA COM) — NEVER touches Main UI thread locks!
             let handle_bg = app_handle.clone();
-            tauri::async_runtime::spawn(async move {
+            std::thread::spawn(move || {
                 let mut current_lyrics_title = String::new();
                 let mut last_clip_seq: u32 = 0;
                 let mut clip_id_counter: u64 = 1;
@@ -515,11 +611,11 @@ fn main() {
                 let mut hidden_by_fullscreen = false;
                 let mut tick_count: u64 = 0;
 
-                // Prime clipboard sequence without emitting old content on startup
+                // Prime clipboard sequence without capturing pre-existing clipboard
                 let _ = system_tools::read_clipboard_text_if_changed(&mut last_clip_seq);
 
                 loop {
-                    tokio::time::sleep(Duration::from_millis(350)).await;
+                    std::thread::sleep(Duration::from_millis(450));
                     tick_count += 1;
 
                     // A. Caps Lock live indicator
@@ -539,8 +635,10 @@ fn main() {
                         );
                     }
 
-                    // B. Clipboard Watcher (every 350ms, sequence-checked = ~0 CPU)
-                    if let Some(copied) = system_tools::read_clipboard_text_if_changed(&mut last_clip_seq) {
+                    // B. Clipboard Watcher (sequence-checked = 0% CPU when idle)
+                    if let Some(copied) =
+                        system_tools::read_clipboard_text_if_changed(&mut last_clip_seq)
+                    {
                         let mut hist = clipboard_clone.lock().unwrap();
                         hist.retain(|e| e.text != copied);
                         hist.insert(
@@ -560,16 +658,15 @@ fn main() {
                         let _ = handle_bg.emit("clipboard-updated", snapshot);
                     }
 
-                    // C. Fullscreen Auto-Hide & Battery Watcher (~every 700ms)
+                    // C. Fullscreen Auto-Hide & Battery Watcher (~every 900ms)
                     if tick_count % 2 == 0 {
-                        // Battery plug/unplug & low battery toast
                         let bat_now = system_tools::get_battery_info();
                         if bat_now.has_battery {
                             if bat_now.is_charging != last_battery.is_charging {
                                 let msg = if bat_now.is_charging {
-                                    format!("Charging • {}%", bat_now.percent)
+                                    format!("Charging · {}%", bat_now.percent)
                                 } else {
-                                    format!("On Battery • {}%", bat_now.percent)
+                                    format!("On Battery · {}%", bat_now.percent)
                                 };
                                 let _ = handle_bg.emit(
                                     "island-toast",
@@ -586,54 +683,57 @@ fn main() {
                                     "island-toast",
                                     IslandToast {
                                         kind: "battery".to_string(),
-                                        message: format!("Low Battery • {}%", bat_now.percent),
+                                        message: format!("Low Battery · {}%", bat_now.percent),
                                     },
                                 );
                             }
                         }
                         last_battery = bat_now;
 
-                        // Smart Fullscreen Auto-Hide
+                        // Smart Fullscreen Auto-Hide (uses cached HWNDs, dispatches show/hide safely)
                         if auto_hide_clone.load(Ordering::Relaxed) {
-                            let mut own_hwnds = Vec::new();
-                            if let Some(w) = handle_bg.get_webview_window("island") {
-                                if let Ok(h) = w.hwnd() {
-                                    own_hwnds.push(h.0 as isize);
-                                }
-                            }
-                            if let Some(w) = handle_bg.get_webview_window("lyrics") {
-                                if let Ok(h) = w.hwnd() {
-                                    own_hwnds.push(h.0 as isize);
-                                }
-                            }
-
                             let is_fs = system_tools::is_other_app_fullscreen(&own_hwnds);
                             if is_fs && !hidden_by_fullscreen {
                                 hidden_by_fullscreen = true;
-                                if let Some(w) = handle_bg.get_webview_window("island") {
-                                    let _ = w.hide();
-                                }
+                                let h_ui = handle_bg.clone();
+                                let _ = handle_bg.run_on_main_thread(move || {
+                                    if let Some(w) = h_ui.get_webview_window("island") {
+                                        let _ = w.hide();
+                                    }
+                                });
                             } else if !is_fs && hidden_by_fullscreen {
                                 hidden_by_fullscreen = false;
-                                if let Some(w) = handle_bg.get_webview_window("island") {
-                                    let _ = w.show();
-                                }
+                                let h_ui = handle_bg.clone();
+                                let _ = handle_bg.run_on_main_thread(move || {
+                                    if let Some(w) = h_ui.get_webview_window("island") {
+                                        let _ = w.show();
+                                    }
+                                });
                             }
                         } else if hidden_by_fullscreen {
                             hidden_by_fullscreen = false;
-                            if let Some(w) = handle_bg.get_webview_window("island") {
-                                let _ = w.show();
-                            }
+                            let h_ui = handle_bg.clone();
+                            let _ = handle_bg.run_on_main_thread(move || {
+                                if let Some(w) = h_ui.get_webview_window("island") {
+                                    let _ = w.show();
+                                }
+                            });
                         }
                     }
 
-                    // D. Media SMTC & Full Lyrics Sync
-                    let track_opt = {
+                    // D. Media SMTC & Cached Thumbnail Update (runs ONLY on this background thread)
+                    let (track_opt, thumb_opt) = {
                         let mut mgr = media_mgr_clone.lock().unwrap();
-                        mgr.get_current_track_info()
+                        let t = mgr.get_current_track_info();
+                        let thumb = mgr.get_cached_thumbnail();
+                        (t, thumb)
                     };
 
+                    *cached_track_clone.lock().unwrap() = track_opt.clone();
+                    *cached_thumb_clone.lock().unwrap() = thumb_opt;
+
                     if let Some(track) = track_opt {
+                        // Lightweight emit (NO giant base64 image in payload!)
                         let _ = handle_bg.emit("media-updated", &track);
 
                         if !track.title.is_empty() && track.title != current_lyrics_title {

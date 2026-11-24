@@ -175,7 +175,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
       } catch {
         // Ignore transient poll errors
       }
-    }, 55);
+    }, 80);
 
     return () => {
       mounted = false;
@@ -259,7 +259,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     };
     fetchVol();
     loadAudioDevices();
-    const id = setInterval(fetchVol, 2000);
+    const id = setInterval(fetchVol, 4000);
     return () => {
       mounted = false;
       clearInterval(id);
@@ -676,6 +676,17 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
       }
     };
 
+    loadInitial();
+    return () => {
+      mounted = false;
+    };
+  }, [isTauri]);
+
+  // Poll CPU/RAM stats ONLY while the System tab is actively visible (0% overhead when idle!)
+  useEffect(() => {
+    if (!isTauri || !isHovered || activeTab !== "system") return;
+    let mounted = true;
+
     const pollStats = async () => {
       try {
         const { invoke } = await import("@tauri-apps/api/core");
@@ -691,14 +702,13 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
       } catch {}
     };
 
-    loadInitial();
     pollStats();
     const id = setInterval(pollStats, 1500);
     return () => {
       mounted = false;
       clearInterval(id);
     };
-  }, [isTauri]);
+  }, [isTauri, isHovered, activeTab]);
 
   const handleToggleAutostart = async () => {
     if (!isTauri || autostartBusy) return;
