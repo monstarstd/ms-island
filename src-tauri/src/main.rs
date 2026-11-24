@@ -383,6 +383,12 @@ async fn reveal_shelf_file(path: String) -> Result<bool, ()> {
 #[tauri::command]
 fn reset_island_position(app: AppHandle) {
     center_island_on_primary_monitor(&app);
+    let _ = app.emit("island-dock-changed", "top");
+}
+
+#[tauri::command]
+fn quit_app(app: AppHandle) {
+    app.exit(0);
 }
 
 #[tauri::command]
@@ -461,6 +467,7 @@ fn main() {
             open_shelf_file,
             reveal_shelf_file,
             reset_island_position,
+            quit_app,
             start_window_drag
         ])
         .setup(move |app| {
@@ -533,9 +540,14 @@ fn main() {
                 let _ = island_win.show();
 
                 let handle_drop = app_handle.clone();
+                let last_edge = Arc::new(Mutex::new(String::from("top")));
+                let move_seq = Arc::new(std::sync::atomic::AtomicU64::new(0));
+                let is_snapping = Arc::new(AtomicBool::new(false));
+                let snap_flag_evt = is_snapping.clone();
+
                 island_win.on_window_event(move |event| {
-                    if let WindowEvent::DragDrop(dd) = event {
-                        match dd {
+                    match event {
+                        WindowEvent::DragDrop(dd) => match dd {
                             DragDropEvent::Enter { .. } => {
                                 let _ = handle_drop.emit("shelf-drag-state", true);
                             }
@@ -553,7 +565,96 @@ fn main() {
                                 }
                             }
                             _ => {}
+                        },
+                        WindowEvent::Moved(pos) => {
+                            if snap_flag_evt.load(Ordering::Relaxed) {
+                                return;
+                            }
+
+                            let (screen_w, win_w) =
+                                match (handle_drop.primary_monitor(), handle_drop.get_webview_window("island")) {
+                                    (Ok(Some(m)), Some(w)) => (
+                                        m.size().width as i32,
+                                        w.outer_size().map(|s| s.width as i32).unwrap_or(560),
+                                    ),
+                                    _ => (1920, 560),
+                                };
+
+                            let top_dist = pos.y;
+                            let left_dist = pos.x;
+                            let right_dist = screen_w - (pos.x + win_w);
+
+                            let edge = if top_dist <= 24 {
+                                "top"
+                            } else if left_dist <= 26 {
+                                "left"
+                            } else if right_dist <= 26 {
+                                "right"
+                            } else {
+                                "floating"
+                            };
+
+                            {
+                                let mut prev = last_edge.lock().unwrap();
+                                if prev.as_str() != edge {
+                                    *prev = edge.to_string();
+                                    let _ = handle_drop.emit("island-dock-changed", edge);
+                                }
+                            }
+
+                            // Notify subtle fluid motion state + schedule magnetic edge snap after drag stops
+                            let seq = move_seq.fetch_add(1, Ordering::SeqCst) + 1;
+                            let _ = handle_drop.emit("island-moving", true);
+
+                            let seq_check = move_seq.clone();
+                            let h_snap = handle_drop.clone();
+                            let snap_guard = snap_flag_evt.clone();
+                            let edge_owned = edge.to_string();
+                            let cur_x = pos.x;
+                            let cur_y = pos.y;
+
+                            tauri::async_runtime::spawn(async move {
+                                tokio::time::sleep(Duration::from_millis(190)).await;
+                                if seq_check.load(Ordering::SeqCst) != seq {
+                                    return;
+                                }
+                                let _ = h_snap.emit("island-moving", false);
+
+                                // Magnetic flush snap if near Top, Left, or Right edge
+                                let target = match edge_owned.as_str() {
+                                    "top" if cur_y != 0 => Some((cur_x.clamp(0, (screen_w - win_w).max(0)), 0)),
+                                    "left" if cur_x != 0 => Some((0, cur_y.max(0))),
+                                    "right" if cur_x != screen_w - win_w => {
+                                        Some(((screen_w - win_w).max(0), cur_y.max(0)))
+                                    }
+                                    _ => None,
+                                };
+
+                                if let Some((tx, ty)) = target {
+                                    snap_guard.store(true, Ordering::Relaxed);
+                                    let steps = 6;
+                                    for step in 1..=steps {
+                                        let t = (step as f32) / (steps as f32);
+                                        // Smooth ease-out cubic glide
+                                        let ease = 1.0 - (1.0 - t).powi(3);
+                                        let nx = cur_x + ((tx - cur_x) as f32 * ease).round() as i32;
+                                        let ny = cur_y + ((ty - cur_y) as f32 * ease).round() as i32;
+                                        let h_ui = h_snap.clone();
+                                        let _ = h_snap.run_on_main_thread(move || {
+                                            if let Some(w) = h_ui.get_webview_window("island") {
+                                                let _ = w.set_position(tauri::Position::Physical(
+                                                    tauri::PhysicalPosition { x: nx, y: ny },
+                                                ));
+                                            }
+                                        });
+                                        tokio::time::sleep(Duration::from_millis(12)).await;
+                                    }
+                                    tokio::time::sleep(Duration::from_millis(40)).await;
+                                    snap_guard.store(false, Ordering::Relaxed);
+                                }
+                            });
                         }
+                        _ => {}
                     }
                 });
             }

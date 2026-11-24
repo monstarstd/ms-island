@@ -138,10 +138,41 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
 }) => {
   const [isHovered, setIsHovered] = useState(false);
   const [activeTab, setActiveTab] = useState<TabType>("music");
+  const [dockEdge, setDockEdge] = useState<"top" | "left" | "right" | "floating">("top");
+  const [isMoving, setIsMoving] = useState(false);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const hoverTimeoutRef = useRef<number | null>(null);
   const hoverEnterTimeoutRef = useRef<number | null>(null);
   const isTauri = typeof window !== "undefined" && !!(window as any).__TAURI_INTERNALS__;
   const isLight = theme === "light";
+
+  // Listen for live dock edge morphing & drag motion state from Rust
+  useEffect(() => {
+    if (!isTauri) return;
+    let unlistenEdge: (() => void) | undefined;
+    let unlistenMove: (() => void) | undefined;
+
+    import("@tauri-apps/api/event").then(async ({ listen }) => {
+      unlistenEdge = await listen<string>("island-dock-changed", (e) => {
+        if (
+          e.payload === "top" ||
+          e.payload === "left" ||
+          e.payload === "right" ||
+          e.payload === "floating"
+        ) {
+          setDockEdge(e.payload);
+        }
+      });
+      unlistenMove = await listen<boolean>("island-moving", (e) => {
+        setIsMoving(e.payload);
+      });
+    });
+
+    return () => {
+      if (unlistenEdge) unlistenEdge();
+      if (unlistenMove) unlistenMove();
+    };
+  }, [isTauri]);
 
   // -------------------------------------------------------------
   // 1. Real WASAPI Audio Spectrum & Visualizer Preference
@@ -772,9 +803,72 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   }, [isHovered, activeTab, onTogglePlayPause]);
 
   // -------------------------------------------------------------
+  // Right-Click Context Menu Handlers (Refresh & Close)
+  // -------------------------------------------------------------
+  const handleContextMenu = (e: React.MouseEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (hoverEnterTimeoutRef.current) {
+      clearTimeout(hoverEnterTimeoutRef.current);
+      hoverEnterTimeoutRef.current = null;
+    }
+    if (hoverTimeoutRef.current) {
+      clearTimeout(hoverTimeoutRef.current);
+      hoverTimeoutRef.current = null;
+    }
+    // Clamp menu inside 560x286 transparent window bounds so it never clips
+    const menuW = 186;
+    const menuH = 148;
+    const x = Math.max(8, Math.min(window.innerWidth - menuW - 8, e.clientX));
+    const y = Math.max(8, Math.min(window.innerHeight - menuH - 8, e.clientY + 6));
+    setContextMenu({ x, y });
+  };
+
+  const handleRefreshIsland = async () => {
+    setContextMenu(null);
+    setDockEdge("top");
+    setIsHovered(false);
+    setActiveTab("music");
+    if (isTauri) {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("reset_island_position");
+        loadWeather();
+        loadAudioDevices();
+        showToast("refresh", "Reset to Top Center", 1800);
+      } catch (e) {
+        console.error("Failed to refresh island:", e);
+      }
+    }
+  };
+
+  const handleQuitApp = async () => {
+    setContextMenu(null);
+    if (isTauri) {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("quit_app");
+      } catch (e) {
+        console.error("Failed to quit app:", e);
+      }
+    }
+  };
+
+  // Close context menu on Escape
+  useEffect(() => {
+    if (!contextMenu) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setContextMenu(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [contextMenu]);
+
+  // -------------------------------------------------------------
   // Hover Handlers strictly bound to inner physical notch
   // -------------------------------------------------------------
   const handleMouseEnter = () => {
+    if (contextMenu) return;
     if (hoverTimeoutRef.current) {
       clearTimeout(hoverTimeoutRef.current);
       hoverTimeoutRef.current = null;
@@ -788,6 +882,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   };
 
   const handleMouseLeave = () => {
+    if (contextMenu) return;
     if (hoverEnterTimeoutRef.current) {
       clearTimeout(hoverEnterTimeoutRef.current);
       hoverEnterTimeoutRef.current = null;
@@ -912,24 +1007,58 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
 
   const focusRing = "focus:outline-none focus-visible:ring-1 focus-visible:ring-[#f97316]";
 
+  // Outer alignment ensures flush bezel contact on Top, Left, or Right edges
+  const outerAlignCls =
+    dockEdge === "left"
+      ? "justify-start pt-2"
+      : dockEdge === "right"
+        ? "justify-end pt-2"
+        : dockEdge === "floating"
+          ? "justify-center pt-2"
+          : "justify-center pt-0";
+
+  // Fluid shape morphing: flush notch when docked to an edge -> full pill when detached
+  const shellShapeCls = (() => {
+    if (isHovered) {
+      if (dockEdge === "top") return "w-[516px] h-[256px] rounded-t-none rounded-b-[22px] border-t-0 p-3.5";
+      if (dockEdge === "left") return "w-[516px] h-[256px] rounded-l-none rounded-r-[22px] border-l-0 p-3.5";
+      if (dockEdge === "right") return "w-[516px] h-[256px] rounded-r-none rounded-l-[22px] border-r-0 p-3.5";
+      return "w-[516px] h-[256px] rounded-[22px] p-3.5";
+    }
+    // Idle Bar shapes
+    if (dockEdge === "top") {
+      return "w-[430px] h-[36px] rounded-t-none rounded-b-[16px] border-t-0 px-3.5 py-1.5 cursor-pointer";
+    }
+    if (dockEdge === "left") {
+      return "w-[430px] h-[36px] rounded-l-none rounded-r-[18px] border-l-0 px-3.5 py-1.5 cursor-pointer";
+    }
+    if (dockEdge === "right") {
+      return "w-[430px] h-[36px] rounded-r-none rounded-l-[18px] border-r-0 px-3.5 py-1.5 cursor-pointer";
+    }
+    // Detached away from edges -> smooth floating pill!
+    return "w-[422px] h-[38px] rounded-full px-4 py-1.5 cursor-pointer";
+  })();
+
+  const motionLiftCls = isMoving
+    ? "scale-[1.016] shadow-2xl shadow-black/90"
+    : "scale-100";
+
   return (
-    <div className="w-full flex justify-center items-start pt-0">
+    <div className={`relative w-full h-full flex items-start transition-all duration-300 ${outerAlignCls}`}>
       {/*
         FLAT SEAMLESS DYNAMIC ISLAND SHELL
+        - Flush edge-docked on Top / Left / Right; fluidly morphs into a floating pill when pulled away
         - Organic spring curve transition (island-shell-spring)
         - Hover listeners strictly on this physical element
-        - Scroll wheel controls system volume natively
+        - Right-click opens custom context menu (Refresh / Close)
       */}
       <div
         onMouseEnter={handleMouseEnter}
         onMouseLeave={handleMouseLeave}
         onWheel={handleWheelVolume}
-        className={`island-shell-spring overflow-hidden border ${shellSurface} ${
+        onContextMenu={handleContextMenu}
+        className={`island-shell-spring overflow-hidden border ${shellSurface} ${shellShapeCls} ${motionLiftCls} ${
           isDragOver ? "border-[#f97316] ring-1 ring-[#f97316]" : ""
-        } ${
-          isHovered
-            ? "w-[516px] h-[256px] rounded-[20px] p-3.5"
-            : "w-[430px] h-[36px] rounded-b-[16px] rounded-t-none border-t-0 px-3.5 py-1.5 cursor-pointer"
         }`}
       >
         {!isHovered ? (
@@ -2154,6 +2283,82 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
           </div>
         )}
       </div>
+
+      {/* Custom Flat Right-Click Context Menu */}
+      {contextMenu && (
+        <>
+          <div
+            className="fixed inset-0 z-[90]"
+            onClick={() => setContextMenu(null)}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setContextMenu(null);
+            }}
+          />
+          <div
+            className={`context-menu-pop fixed z-[100] w-[184px] p-1 rounded-xl border shadow-2xl select-none ${
+              isLight
+                ? "bg-[#f8f8f7] border-zinc-300 text-zinc-900 shadow-black/15"
+                : "bg-[#121216] border-zinc-800 text-zinc-100 shadow-black/90"
+            }`}
+            style={{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }}
+          >
+            <button
+              onClick={handleRefreshIsland}
+              className={`w-full px-2.5 py-1.5 rounded-lg text-[11px] font-medium flex items-center gap-2 transition-colors ${focusRing} ${
+                isLight ? "hover:bg-zinc-200/80" : "hover:bg-zinc-800"
+              }`}
+            >
+              <RefreshCw className="w-3.5 h-3.5 text-[#f97316]" />
+              <span>Refresh &amp; Center</span>
+            </button>
+
+            <button
+              onClick={() => {
+                setContextMenu(null);
+                onToggleLyricsWindow();
+              }}
+              className={`w-full px-2.5 py-1.5 rounded-lg text-[11px] font-medium flex items-center gap-2 transition-colors ${focusRing} ${
+                isLight ? "hover:bg-zinc-200/80" : "hover:bg-zinc-800"
+              }`}
+            >
+              <FileText className={`w-3.5 h-3.5 ${mutedText}`} />
+              <span>{isLyricsOpen ? "Hide Lyrics" : "Show Lyrics"}</span>
+            </button>
+
+            <button
+              onClick={() => {
+                setContextMenu(null);
+                onToggleTheme();
+              }}
+              className={`w-full px-2.5 py-1.5 rounded-lg text-[11px] font-medium flex items-center gap-2 transition-colors ${focusRing} ${
+                isLight ? "hover:bg-zinc-200/80" : "hover:bg-zinc-800"
+              }`}
+            >
+              {isLight ? (
+                <Moon className={`w-3.5 h-3.5 ${mutedText}`} />
+              ) : (
+                <Sun className={`w-3.5 h-3.5 ${mutedText}`} />
+              )}
+              <span>{isLight ? "Dark Mode" : "Light Mode"}</span>
+            </button>
+
+            <div className={`my-1 h-px ${isLight ? "bg-zinc-200" : "bg-zinc-800"}`} />
+
+            <button
+              onClick={handleQuitApp}
+              className={`w-full px-2.5 py-1.5 rounded-lg text-[11px] font-medium flex items-center gap-2 transition-colors ${focusRing} ${
+                isLight
+                  ? "text-red-600 hover:bg-red-50"
+                  : "text-red-400 hover:bg-red-950/50"
+              }`}
+            >
+              <Power className="w-3.5 h-3.5" />
+              <span>Close MS Island</span>
+            </button>
+          </div>
+        </>
+      )}
     </div>
   );
 };

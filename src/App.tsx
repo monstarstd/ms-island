@@ -237,13 +237,12 @@ export const App: React.FC = () => {
 
   return (
     <div
-      className={`w-screen h-screen flex flex-col justify-between overflow-hidden bg-transparent ${
-        theme === "light" ? "light" : "dark"
-      }`}
+      className={`w-screen h-screen flex flex-col justify-between overflow-hidden bg-transparent ${theme === "light" ? "light" : "dark"
+        }`}
     >
       {/* 1. Dynamic Island Window */}
       {windowMode === "island" && (
-        <div className="w-full flex justify-center pt-0 z-50">
+        <div className="w-full h-full z-50">
           <DynamicIsland
             media={media}
             isLyricsOpen={isLyricsOpen}
