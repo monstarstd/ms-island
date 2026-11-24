@@ -187,6 +187,63 @@ fn set_lyrics_always_on_top(app: AppHandle, pinned: bool) -> bool {
     pinned
 }
 
+#[link(name = "dwmapi")]
+extern "system" {
+    fn DwmSetWindowAttribute(
+        hwnd: isize,
+        dw_attribute: u32,
+        pv_attribute: *const std::ffi::c_void,
+        cb_attribute: u32,
+    ) -> i32;
+}
+
+/// Switches Lyrics window between clean transparent matte ("smoked") and native Windows DWM Acrylic ("acrylic")
+#[tauri::command]
+fn set_lyrics_backdrop(app: AppHandle, mode: String, is_light: bool) -> String {
+    if let Some(lyrics_win) = app.get_webview_window("lyrics") {
+        let is_acrylic = mode == "acrylic";
+
+        if is_acrylic {
+            let tint = if is_light {
+                (244, 244, 241, 188)
+            } else {
+                (12, 12, 16, 178)
+            };
+            let _ = window_vibrancy::apply_acrylic(&lyrics_win, Some(tint));
+            // Align native Windows 11 OS corners (DWMWCP_ROUND = 2) with the UI border
+            if let Ok(hwnd) = lyrics_win.hwnd() {
+                const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
+                let pref: u32 = 2;
+                unsafe {
+                    let _ = DwmSetWindowAttribute(
+                        hwnd.0 as isize,
+                        DWMWA_WINDOW_CORNER_PREFERENCE,
+                        &pref as *const u32 as *const std::ffi::c_void,
+                        std::mem::size_of::<u32>() as u32,
+                    );
+                }
+            }
+            return "acrylic".to_string();
+        } else {
+            let _ = window_vibrancy::clear_acrylic(&lyrics_win);
+            if let Ok(hwnd) = lyrics_win.hwnd() {
+                const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
+                let pref: u32 = 0; // DWMWCP_DEFAULT
+                unsafe {
+                    let _ = DwmSetWindowAttribute(
+                        hwnd.0 as isize,
+                        DWMWA_WINDOW_CORNER_PREFERENCE,
+                        &pref as *const u32 as *const std::ffi::c_void,
+                        std::mem::size_of::<u32>() as u32,
+                    );
+                }
+            }
+            return "smoked".to_string();
+        }
+    }
+    "smoked".to_string()
+}
+
 // -----------------------------------------------------------------------------
 // Async Media Transport & Win32/COM Commands (Worker Thread Pool)
 // -----------------------------------------------------------------------------
@@ -554,6 +611,7 @@ fn main() {
             toggle_lyrics_window,
             close_lyrics_window,
             set_lyrics_always_on_top,
+            set_lyrics_backdrop,
             toggle_play_pause,
             skip_next,
             skip_prev,

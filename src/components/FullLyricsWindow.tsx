@@ -28,12 +28,31 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
   const [isSearching, setIsSearching] = useState(false);
   const [customLyrics, setCustomLyrics] = useState<string | null>(null);
   const [isPinned, setIsPinned] = useState(true);
+  const [backdropMode, setBackdropMode] = useState<"smoked" | "acrylic">(() => {
+    const saved = localStorage.getItem("ms-island-lyrics-backdrop");
+    return saved === "acrylic" ? "acrylic" : "smoked";
+  });
   const [fontSize, setFontSize] = useState<number>(() => {
     const saved = Number(localStorage.getItem("ms-island-lyrics-font"));
     return saved >= 12 && saved <= 20 ? saved : 14;
   });
 
   const isLight = theme === "light";
+  const isAcrylic = backdropMode === "acrylic";
+
+  // Sync native Windows DWM Acrylic / Smoked backdrop whenever mode or theme changes
+  useEffect(() => {
+    const isTauri = !!(window as any).__TAURI_INTERNALS__;
+    if (!isTauri) return;
+    invoke("set_lyrics_backdrop", { mode: backdropMode, isLight }).catch((e) => {
+      console.error("Failed to set lyrics backdrop:", e);
+    });
+  }, [backdropMode, isLight]);
+
+  const handleSetBackdrop = (next: "smoked" | "acrylic") => {
+    setBackdropMode(next);
+    localStorage.setItem("ms-island-lyrics-backdrop", next);
+  };
 
   // Reset custom manual lyrics when a new track plays
   useEffect(() => {
@@ -115,32 +134,33 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
     ? "bg-zinc-200/80 hover:bg-zinc-300 text-zinc-800 border-zinc-300 active:scale-[0.97]"
     : "bg-zinc-800/90 hover:bg-zinc-700 text-zinc-200 border-zinc-700 active:scale-[0.97]";
 
+  const shellRadiusCls = isAcrylic ? "rounded-lg" : "rounded-2xl";
+  const topRadiusCls = isAcrylic ? "rounded-t-lg" : "rounded-t-2xl";
+
   return (
     <div
       onMouseEnter={() => setIsWindowHovered(true)}
       onMouseLeave={() => setIsWindowHovered(false)}
-      className={`w-full h-full flex flex-col rounded-2xl overflow-hidden select-none border transition-[border-color,box-shadow] duration-150 ease-out ${
+      className={`w-full h-full flex flex-col ${shellRadiusCls} overflow-hidden select-none border transition-[border-color,box-shadow] duration-150 ease-out ${
         isWindowHovered
           ? isLight
             ? "border-zinc-300 shadow-2xl text-zinc-900"
             : "border-zinc-800 shadow-2xl text-zinc-100"
           : isLight
-            ? "border-transparent shadow-none text-zinc-900"
-            : "border-transparent shadow-none text-zinc-100"
+            ? "border-zinc-300/65 shadow-lg text-zinc-900"
+            : "border-zinc-800/70 shadow-lg text-zinc-100"
       }`}
     >
       {/* TOP SOLID ZONE: Always identical 1px border geometry -> ZERO hover jiggle */}
       <div
-        className={`flex-shrink-0 border-b transition-[border-radius,box-shadow] duration-150 ${
+        className={`flex-shrink-0 border-b transition-[background-color,border-color] duration-150 ${topRadiusCls} ${
           isLight
-            ? "bg-[#efefec] border-zinc-300"
-            : "bg-[#121215] border-zinc-800"
-        } ${
-          isWindowHovered
-            ? "rounded-t-2xl"
-            : isLight
-              ? "rounded-2xl shadow-lg ring-1 ring-inset ring-zinc-300"
-              : "rounded-2xl shadow-xl shadow-black/40 ring-1 ring-inset ring-zinc-800"
+            ? isAcrylic
+              ? "bg-[#efefec]/90 border-zinc-300/80"
+              : "bg-[#efefec] border-zinc-300"
+            : isAcrylic
+              ? "bg-[#121215]/88 border-zinc-800/80"
+              : "bg-[#121215] border-zinc-800"
         }`}
       >
         {/* Draggable Native Header */}
@@ -252,8 +272,14 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
         <form
           onSubmit={handleManualSearch}
           className={`flex items-center gap-1.5 px-3.5 py-2 transition-colors ${
-            isLight ? "bg-[#f3f3f0]" : "bg-[#101013]"
-          } ${isWindowHovered ? "" : "rounded-b-2xl"}`}
+            isLight
+              ? isAcrylic
+                ? "bg-[#f3f3f0]/88"
+                : "bg-[#f3f3f0]"
+              : isAcrylic
+                ? "bg-[#101013]/85"
+                : "bg-[#101013]"
+          }`}
         >
           <div className="relative flex-1">
             <input
@@ -283,43 +309,37 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
         </form>
       </div>
 
-      {/* LYRICS BODY BOX: Fades background smoothly on unhover without changing font weight (0px reflow) */}
+      {/* LYRICS BODY BOX: Smoked Tint (78% -> 100%) or Native Windows Acrylic Blur */}
       <div
         className={`flex-1 px-6 py-5 overflow-y-auto select-text transition-[background-color] duration-150 ease-out ${
-          isWindowHovered
-            ? isLight
-              ? "bg-[#f8f8f7]"
-              : "bg-[#0c0c0e]"
-            : isLight
-              ? "bg-[#f8f8f7]/15"
-              : "bg-[#0c0c0e]/15"
+          isAcrylic
+            ? isWindowHovered
+              ? isLight
+                ? "bg-[#f8f8f7]/60"
+                : "bg-[#0c0c0e]/52"
+              : isLight
+                ? "bg-[#f8f8f7]/28"
+                : "bg-[#0c0c0e]/24"
+            : isWindowHovered
+              ? isLight
+                ? "bg-[#f8f8f7]"
+                : "bg-[#0c0c0e]"
+              : isLight
+                ? "bg-[#f8f8f7]/84"
+                : "bg-[#0c0c0e]/78"
         }`}
       >
         {displayedLyrics ? (
           <div
-            className={`leading-[1.8] whitespace-pre-line tracking-[0.01em] max-w-[42ch] transition-[color,text-shadow] duration-150 ${
-              isLight
-                ? isWindowHovered
-                  ? "text-zinc-800"
-                  : "text-zinc-950 [text-shadow:0_1px_6px_rgba(255,255,255,0.95),0_0_2px_rgba(255,255,255,0.9)]"
-                : isWindowHovered
-                  ? "text-zinc-200"
-                  : "text-white [text-shadow:0_1px_6px_rgba(0,0,0,0.95),0_0_3px_rgba(0,0,0,0.9)]"
+            className={`leading-[1.8] whitespace-pre-line tracking-[0.01em] max-w-[42ch] transition-[color] duration-150 ${
+              isLight ? "text-zinc-900" : "text-zinc-100"
             }`}
             style={{ fontSize: `${fontSize}px` }}
           >
             {displayedLyrics}
           </div>
         ) : (
-          <div
-            className={`w-full h-full flex flex-col items-center justify-center text-center py-10 px-4 transition-[text-shadow] duration-150 ${
-              isWindowHovered
-                ? ""
-                : isLight
-                  ? "[text-shadow:0_1px_6px_rgba(255,255,255,0.95)]"
-                  : "[text-shadow:0_1px_6px_rgba(0,0,0,0.95)]"
-            }`}
-          >
+          <div className="w-full h-full flex flex-col items-center justify-center text-center py-10 px-4">
             <p className={`text-xs font-medium ${isLight ? "text-zinc-800" : "text-zinc-200"}`}>
               Waiting for audio playback
             </p>
@@ -330,18 +350,47 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
         )}
       </div>
 
-      {/* Footer (Draggable + Typography Controls, fades cleanly via opacity only) */}
+      {/* Footer: Backdrop Mode (Smoked / Acrylic) + Font Size Controls */}
       <div
         onMouseDown={(e) => {
           if (e.button !== 0) return;
           if ((e.target as HTMLElement).closest("button")) return;
           onStartDrag();
         }}
-        className={`px-4 py-2 border-t flex items-center justify-between text-[11px] cursor-move transition-opacity duration-150 ${
-          isLight ? "bg-[#efefec] border-zinc-300 text-zinc-600" : "bg-[#121215] border-zinc-800 text-zinc-400"
-        } ${isWindowHovered ? "opacity-100" : "opacity-0 pointer-events-none"}`}
+        className={`px-3.5 py-2 border-t flex items-center justify-between text-[11px] cursor-move transition-[background-color,opacity] duration-150 ${
+          isLight
+            ? isAcrylic
+              ? "bg-[#efefec]/88 border-zinc-300/80 text-zinc-600"
+              : "bg-[#efefec] border-zinc-300 text-zinc-600"
+            : isAcrylic
+              ? "bg-[#121215]/88 border-zinc-800/80 text-zinc-400"
+              : "bg-[#121215] border-zinc-800 text-zinc-400"
+        } ${isWindowHovered ? "opacity-100" : "opacity-75"}`}
       >
-        <span>LRCLIB &amp; Genius</span>
+        <div
+          className={`grid grid-cols-2 p-0.5 rounded-lg border text-[10px] font-medium ${
+            isLight ? "bg-zinc-200/80 border-zinc-300" : "bg-[#0c0c0e] border-zinc-800"
+          }`}
+          title="Lyrics background style"
+        >
+          {(["smoked", "acrylic"] as const).map((mode) => (
+            <button
+              key={mode}
+              onClick={() => handleSetBackdrop(mode)}
+              className={`px-2 py-0.5 rounded-md capitalize transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-[#f97316] ${
+                backdropMode === mode
+                  ? isLight
+                    ? "bg-white text-zinc-950 font-semibold shadow-sm"
+                    : "bg-zinc-800 text-white font-semibold"
+                  : isLight
+                    ? "text-zinc-600 hover:text-zinc-950"
+                    : "text-zinc-400 hover:text-white"
+              }`}
+            >
+              {mode}
+            </button>
+          ))}
+        </div>
 
         <div className="flex items-center gap-1.5">
           <span className="text-[10px] mr-0.5">Text</span>

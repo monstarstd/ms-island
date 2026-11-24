@@ -304,7 +304,7 @@ export const App: React.FC = () => {
 
       {/* 2. Full Dedicated Lyrics Popup Window */}
       {windowMode === "lyrics" && (
-        <div className="w-full h-full p-2">
+        <div className="w-full h-full">
           <FullLyricsWindow
             media={media}
             lyricsText={lyricsText}
