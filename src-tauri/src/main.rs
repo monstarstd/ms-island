@@ -223,7 +223,6 @@ fn arrange_docked_windows_ex(app: &AppHandle, state: &AppState, animate: bool) {
 
     let island_edge = lock_safe(&state.island_dock_edge).clone();
     let mut lyrics_edge = lock_safe(&state.lyrics_dock_edge).clone();
-    let universal_style = lock_safe(&state.bar_style).clone();
     let focus = if state.island_side_hovered.load(Ordering::Relaxed) {
         "island"
     } else if state.lyrics_side_hovered.load(Ordering::Relaxed) {
@@ -233,16 +232,15 @@ fn arrange_docked_windows_ex(app: &AppHandle, state: &AppState, animate: bool) {
     };
     let lyrics_auto_peek = state.lyrics_auto_peek.load(Ordering::Relaxed);
 
-    let lyrics_side_offset = if universal_style == "island" {
-        (10.0 * scale).round() as i32
-    } else {
-        0
-    };
-    let top_min = (12.0 * scale).round() as i32;
+    // Keep Lyrics OS window flush to screen edge (matching Island) — the 10px Floating Pill inset
+    // is rendered inside CSS so both pills get equal 10px breathing room for unclipped subtle shadows!
+    let top_min = (8.0 * scale).round() as i32;
     let taskbar_h = (48.0 * scale).round() as i32;
     let usable_bottom = (screen_h - taskbar_h).max(400);
     let mid_y = usable_bottom / 2;
-    let gap = (10.0 * scale).round() as i32;
+    let gap = (14.0 * scale).round() as i32;
+    let island_top_pad = (10.0 * scale).round() as i32;
+    let lyrics_card_pad = (10.0 * scale).round() as i32;
 
     let island_win = app.get_webview_window("island");
     let lyrics_win = app.get_webview_window("lyrics");
@@ -286,7 +284,7 @@ fn arrange_docked_windows_ex(app: &AppHandle, state: &AppState, animate: bool) {
     let same_side = (island_edge == "right" || island_edge == "left") && lyrics_edge == island_edge;
 
     if same_side && lyrics_visible {
-        let island_idle_h = (154.0 * scale).round() as i32;
+        let island_idle_h = (160.0 * scale).round() as i32;
         let island_exp_h = (262.0 * scale).round() as i32;
         let lyrics_peek_h = (112.0 * scale).round() as i32;
         let peek_offset_in_win = ((lyrics_h - lyrics_peek_h) / 2).max(0);
@@ -297,41 +295,45 @@ fn arrange_docked_windows_ex(app: &AppHandle, state: &AppState, animate: bool) {
             0
         };
         let lx = if lyrics_edge == "right" {
-            (screen_w - lyrics_w - lyrics_side_offset).max(0)
+            (screen_w - lyrics_w).max(0)
         } else {
-            lyrics_side_offset
+            0
         };
 
         // Check if screen can fit a stacked pair cleanly
         if top_min + island_idle_h + gap + lyrics_h <= usable_bottom {
-            // Pair centered vertically when idle: Island pill top-anchored inside its window,
-            // Lyrics pill vertically centered inside its window (zero bounce on expand!).
+            // Pair centered vertically when idle:
+            // Island visual pill spans [iy + island_top_pad .. iy + island_top_pad + 160]
+            // Lyrics visual pill spans [ly + peek_offset_in_win .. ly + peek_offset_in_win + 112]
+            // Guaranteed exact 14px gap in ALL states (idle weather, music playing, volume, timer)!
             let pair_h = island_idle_h + gap + lyrics_peek_h;
-            let idle_island_y = (mid_y - pair_h / 2)
-                .clamp(top_min, (usable_bottom - island_exp_h - gap - lyrics_peek_h).max(top_min));
-            let idle_lyrics_pill_top = idle_island_y + island_idle_h + gap;
+            let ideal_pill_top = mid_y - pair_h / 2;
+            let idle_island_y = (ideal_pill_top - island_top_pad)
+                .clamp(top_min, (usable_bottom - island_top_pad - island_exp_h - gap - lyrics_peek_h).max(top_min));
+            let idle_island_pill_bottom = idle_island_y + island_top_pad + island_idle_h;
+            let idle_lyrics_pill_top = idle_island_pill_bottom + gap;
             let idle_lyrics_win_y = (idle_lyrics_pill_top - peek_offset_in_win)
                 .clamp(top_min, (usable_bottom - lyrics_h).max(top_min));
 
             let (target_iy, target_ly) = if !lyrics_auto_peek {
-                // Lyrics permanently expanded: keep Island cleanly above Lyrics
+                // Lyrics permanently expanded: keep Island cleanly 14px above Lyrics card
                 let max_ly = (usable_bottom - lyrics_h).max(top_min);
                 if focus == "island" {
                     let iy = top_min;
-                    let ly = (iy + island_exp_h + gap).min(max_ly);
+                    let ly = (iy + island_top_pad + island_exp_h + gap - lyrics_card_pad).min(max_ly);
                     (iy, ly)
                 } else {
                     let ly = (mid_y - lyrics_h / 2)
-                        .clamp(top_min + island_idle_h + gap, max_ly.max(top_min));
-                    let iy = (ly - gap - island_idle_h).max(top_min);
+                        .clamp(top_min + island_top_pad + island_idle_h + gap - lyrics_card_pad, max_ly.max(top_min));
+                    let iy = (ly + lyrics_card_pad - gap - island_idle_h - island_top_pad).max(top_min);
                     (iy, ly)
                 }
             } else {
                 match focus {
                     "island" => {
                         // Island stays anchored at idle_island_y (100% anti-bounce) and expands down to 262px;
-                        // Lyrics pill glides smoothly down to sit 10px below expanded Island!
-                        let expanded_island_bottom = idle_island_y + island_exp_h;
+                        // Lyrics pill glides smoothly down to sit 14px below expanded Island!
+                        let expanded_island_bottom = idle_island_y + island_top_pad + island_exp_h;
                         let pushed_lyrics_pill_top = expanded_island_bottom + gap;
                         let ly = (pushed_lyrics_pill_top - peek_offset_in_win)
                             .clamp(top_min, (usable_bottom - lyrics_h).max(top_min));
@@ -339,17 +341,19 @@ fn arrange_docked_windows_ex(app: &AppHandle, state: &AppState, animate: bool) {
                     }
                     "lyrics" => {
                         // Lyrics expands right at vertical center (wrapping 100% of its idle pill -> 0% bounce!);
-                        // Island pill glides smoothly up to sit 10px above expanded Lyrics!
+                        // Island pill glides smoothly up to sit 14px above expanded Lyrics card!
                         let max_ly = (usable_bottom - lyrics_h).max(top_min);
                         let ideal_ly = (mid_y - lyrics_h / 2).clamp(top_min, max_ly);
-                        // Ensure Island pill still fits above Lyrics without going off top of screen
-                        let min_ly_for_island = (top_min + island_idle_h + gap).min(max_ly);
+                        let min_ly_for_island =
+                            (top_min + island_top_pad + island_idle_h + gap - lyrics_card_pad)
+                                .min(max_ly);
                         let ly = ideal_ly.max(min_ly_for_island);
-                        let iy = (ly - gap - island_idle_h).max(top_min);
+                        let iy = (ly + lyrics_card_pad - gap - island_idle_h - island_top_pad)
+                            .max(top_min);
                         (iy, ly)
                     }
                     _ => {
-                        // Both idle: snug 10px vertical pair dead-centered on screen!
+                        // Both idle: snug 14px vertical pair dead-centered on screen!
                         (idle_island_y, idle_lyrics_win_y)
                     }
                 }
@@ -389,9 +393,9 @@ fn arrange_docked_windows_ex(app: &AppHandle, state: &AppState, animate: bool) {
     }
     if (lyrics_edge == "right" || lyrics_edge == "left") && lyrics_hwnd != 0 {
         let lx = if lyrics_edge == "right" {
-            (screen_w - lyrics_w - lyrics_side_offset).max(0)
+            (screen_w - lyrics_w).max(0)
         } else {
-            lyrics_side_offset
+            0
         };
         let ly = ((usable_bottom - lyrics_h) / 2).max(top_min);
         moves.push((lyrics_hwnd, lx, ly));

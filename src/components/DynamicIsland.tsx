@@ -993,17 +993,10 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   const isIslandStyle = barStyle === "island";
   const isDetachedPill = dockEdge === "floating" || isIslandStyle;
 
-  const sideIdleHeightPx = (() => {
-    if (showVolumeHud) return 166;
-    if (media.isPlaying) return 164;
-    if (toast) return 154;
-    if (activeDownload || isTimerRunning || isTimerFinished || isStopwatchRunning || isDragOver) {
-      return 150;
-    }
-    return 142;
-  })();
+  // Constant side capsule height so idle weather & music playing never jump or crowd the sibling pill
+  const sideIdleHeightPx = 160;
 
-  const sideVertAlign = isSideStacked ? "items-start" : "items-center";
+  const sideVertAlign = isSideStacked ? "items-start pt-[10px]" : "items-center";
 
   // Notify Rust side-stack coordinator when Island hover state changes (drives smooth sibling push!)
   useEffect(() => {
@@ -1037,27 +1030,27 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
         return "rounded-t-none rounded-b-[22px] border-t-0 p-3.5";
       }
       if (dockEdge === "left" && !isIslandStyle) {
-        return "rounded-l-none rounded-r-[22px] border-l-0 p-3.5 shadow-2xl shadow-black/45";
+        return "rounded-l-none rounded-r-[22px] border-l-0 p-3.5";
       }
       if (dockEdge === "right" && !isIslandStyle) {
-        return "rounded-r-none rounded-l-[22px] border-r-0 p-3.5 shadow-2xl shadow-black/45";
+        return "rounded-r-none rounded-l-[22px] border-r-0 p-3.5";
       }
-      return "rounded-[22px] p-3.5 shadow-2xl shadow-black/45";
+      return "rounded-[22px] p-3.5";
     }
     if (dockEdge === "top" && !isIslandStyle) {
       return "rounded-t-none rounded-b-[16px] border-t-0 px-3.5 py-1.5 cursor-pointer";
     }
     if (dockEdge === "left") {
       return isIslandStyle
-        ? "rounded-[23px] cursor-pointer shadow-lg shadow-black/40"
-        : "rounded-l-none rounded-r-[18px] border-l-0 cursor-pointer shadow-lg shadow-black/35";
+        ? "rounded-[23px] cursor-pointer"
+        : "rounded-l-none rounded-r-[18px] border-l-0 cursor-pointer";
     }
     if (dockEdge === "right") {
       return isIslandStyle
-        ? "rounded-[23px] cursor-pointer shadow-lg shadow-black/40"
-        : "rounded-r-none rounded-l-[18px] border-r-0 cursor-pointer shadow-lg shadow-black/35";
+        ? "rounded-[23px] cursor-pointer"
+        : "rounded-r-none rounded-l-[18px] border-r-0 cursor-pointer";
     }
-    return "rounded-[19px] px-4 py-1.5 cursor-pointer shadow-lg shadow-black/35";
+    return "rounded-[19px] px-4 py-1.5 cursor-pointer";
   })();
 
   const shellWidthPx = isHovered ? 516 : isSideDock ? 46 : idleWidthPx;
@@ -1085,7 +1078,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
           : Math.max(0, (winW - width) / 2);
     const y = isSideDock
       ? isSideStacked
-        ? 0
+        ? 10
         : Math.max(0, (winH - height) / 2)
       : dockEdge === "top"
         ? isIslandStyle
@@ -1134,7 +1127,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
         onContextMenu={handleContextMenu}
         style={{ width: `${shellWidthPx}px`, height: `${shellHeightPx}px` }}
         className={`relative island-shell-spring overflow-hidden border ${tokens.shellSurface} ${shellShapeCls} ${
-          isMoving ? "scale-[1.016] shadow-2xl shadow-black/90" : "scale-100"
+          isMoving ? "scale-[1.014]" : "scale-100"
         } ${isDragOver ? "border-accent ring-1 ring-accent" : ""}`}
       >
         {idleMediaProgress !== null && !isSideDock && (

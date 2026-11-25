@@ -29,8 +29,8 @@ export function getIslandThemeTokens(isLight: boolean): IslandThemeTokens {
   return {
     isLight,
     shellSurface: isLight
-      ? "bg-[#f5f5f3] border-zinc-300 text-zinc-900 shadow-lg shadow-black/10"
-      : "bg-[#0c0c0e] border-zinc-800 text-zinc-100 shadow-2xl shadow-black/80",
+      ? "bg-[#f5f5f3] border-zinc-300/90 text-zinc-900 shadow-[0_3px_10px_rgba(0,0,0,0.12)]"
+      : "bg-[#0c0c0e] border-zinc-700/80 text-zinc-100 shadow-[0_3px_10px_rgba(0,0,0,0.34)]",
     surfaceSubtle: isLight
       ? "bg-white border border-zinc-200/90 rounded-xl"
       : "bg-[#141418] border border-zinc-800/90 rounded-xl",

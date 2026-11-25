@@ -243,7 +243,11 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
 
     const peekW = 46;
     const peekH = 112;
-    const x = lyricsDockEdge === "left" ? 0 : Math.max(0, winSize.w - peekW);
+    const sidePad = barStyle === "island" && isSideDocked ? 10 : 0;
+    const x =
+      lyricsDockEdge === "left"
+        ? sidePad
+        : Math.max(0, winSize.w - peekW - sidePad);
     const y = Math.max(0, (winSize.h - peekH) / 2);
 
     invoke("set_lyrics_hit_rect", {
@@ -254,7 +258,7 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
       pad: 0,
       fullWindow: false,
     }).catch(() => {});
-  }, [isCollapsed, lyricsDockEdge, winSize]);
+  }, [isCollapsed, lyricsDockEdge, barStyle, isSideDocked, winSize]);
 
   useEffect(() => {
     return () => {
@@ -621,6 +625,7 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
     : "text-zinc-400 hover:text-white";
 
   const isNotchEdge = barStyle === "notch" && isSideDocked;
+  const isFloatingSide = barStyle === "island" && isSideDocked;
   const shellRadiusCls = isCollapsed
     ? isNotchEdge
       ? lyricsDockEdge === "right"
@@ -651,28 +656,54 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
       ? "border-zinc-300"
       : "border-zinc-800";
 
-  const shellW = isCollapsed ? 46 : winSize.w;
-  const shellH = isCollapsed ? 112 : winSize.h;
+  // Inset Solid card by 10px on free edges so the tight subtle shadow NEVER gets clipped by OS window bounds!
+  const sideInsetPx = isFloatingSide ? 10 : 0;
+  const freeEdgePad = isAcrylic ? 0 : 10;
+  const expandedW = isAcrylic
+    ? winSize.w
+    : Math.max(260, winSize.w - freeEdgePad - sideInsetPx);
+  const expandedH = isAcrylic ? winSize.h : Math.max(280, winSize.h - freeEdgePad * 2);
+
+  const shellW = isCollapsed ? 46 : expandedW;
+  const shellH = isCollapsed ? 112 : expandedH;
+
+  const outerPadCls = isAcrylic
+    ? ""
+    : lyricsDockEdge === "left"
+      ? isFloatingSide
+        ? "pl-[10px] pr-[10px] py-[10px]"
+        : "pl-0 pr-[10px] py-[10px]"
+      : lyricsDockEdge === "right"
+        ? isFloatingSide
+          ? "pr-[10px] pl-[10px] py-[10px]"
+          : "pr-0 pl-[10px] py-[10px]"
+        : "p-[10px]";
 
   const outerAlignCls = `${
     lyricsDockEdge === "left" ? "justify-start" : "justify-end"
-  } items-center`;
+  } items-center ${outerPadCls}`;
+
+  const subtleShadowCls = isAcrylic
+    ? ""
+    : isLight
+      ? "shadow-[0_3px_10px_rgba(0,0,0,0.12)]"
+      : "shadow-[0_3px_10px_rgba(0,0,0,0.34)]";
 
   return (
     <div className={`w-full h-full flex bg-transparent select-none ${outerAlignCls}`}>
-      {/* Single Persistent Shell with Exact Same island-shell-spring Morph as Dynamic Island */}
+      {/* Single Persistent Shell with Exact Same island-shell-spring Morph & Subtle Shadow as Dynamic Island */}
       <div
         onMouseEnter={handlePeekEnter}
         onMouseLeave={handlePeekLeave}
         style={{ width: `${shellW}px`, height: `${shellH}px` }}
-        className={`relative island-shell-spring flex flex-col ${shellRadiusCls} overflow-hidden border ${
+        className={`relative island-shell-spring flex flex-col ${shellRadiusCls} ${subtleShadowCls} overflow-hidden border ${
           isAcrylic
             ? isLight
               ? "bg-transparent border-black/15 text-zinc-900"
               : "bg-transparent border-white/15 text-zinc-100"
             : isLight
-              ? "bg-[#f5f5f3] border-zinc-300 shadow-2xl text-zinc-900"
-              : "bg-[#0c0c0e] border-zinc-800 shadow-2xl text-zinc-100"
+              ? "bg-[#f5f5f3] border-zinc-300/90 text-zinc-900"
+              : "bg-[#0c0c0e] border-zinc-700/80 text-zinc-100"
         }`}
       >
         {isCollapsed ? (
