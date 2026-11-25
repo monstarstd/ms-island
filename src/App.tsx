@@ -4,7 +4,7 @@ import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { DynamicIsland } from "./components/DynamicIsland";
 import { FullLyricsWindow } from "./components/FullLyricsWindow";
-import { MediaTrack } from "./types/media";
+import { EMPTY_LYRICS_PAYLOAD, LyricsPayload, MediaTrack } from "./types/media";
 import { ThemeMode } from "./types/theme";
 import { applyAccentFromThumbnail } from "./utils/accentColor";
 
@@ -27,7 +27,7 @@ export const App: React.FC = () => {
     return queryParams.get("mode") || hashMode || "island";
   });
   const [media, setMedia] = useState<MediaTrack>(EMPTY_TRACK);
-  const [lyricsText, setLyricsText] = useState<string>("");
+  const [lyricsData, setLyricsData] = useState<LyricsPayload>(EMPTY_LYRICS_PAYLOAD);
   const [isLyricsOpen, setIsLyricsOpen] = useState<boolean>(false);
   const [theme, setTheme] = useState<ThemeMode>(() => {
     const saved = localStorage.getItem("ms-island-theme");
@@ -117,19 +117,19 @@ export const App: React.FC = () => {
         if (event.payload && windowMode === "lyrics") {
           Promise.all([
             invoke<MediaTrack | null>("get_current_track"),
-            invoke<string>("get_full_lyrics"),
+            invoke<LyricsPayload>("get_full_lyrics"),
           ])
             .then(async ([track, fullLyrics]) => {
               if (isMounted) {
                 if (track && track.title) await applyTrackUpdate(track);
-                if (fullLyrics) setLyricsText(fullLyrics);
+                if (fullLyrics) setLyricsData(fullLyrics);
               }
             })
             .catch(() => {});
         }
       }),
-      listen<string>("lyrics-updated", (event) => {
-        setLyricsText(event.payload);
+      listen<LyricsPayload>("lyrics-updated", (event) => {
+        if (event.payload) setLyricsData(event.payload);
       }),
       listen<MediaTrack>("media-updated", (event) => {
         applyTrackUpdate(event.payload);
@@ -165,13 +165,13 @@ export const App: React.FC = () => {
 
     Promise.all([
       invoke<MediaTrack | null>("get_current_track"),
-      invoke<string>("get_full_lyrics"),
+      invoke<LyricsPayload>("get_full_lyrics"),
       invoke<boolean>("is_lyrics_window_open"),
     ])
       .then(async ([track, fullLyrics, isOpen]) => {
         if (isMounted) {
           if (track && track.title) await applyTrackUpdate(track);
-          if (fullLyrics) setLyricsText(fullLyrics);
+          if (fullLyrics) setLyricsData(fullLyrics);
           setIsLyricsOpen(isOpen);
         }
       })
@@ -315,9 +315,10 @@ export const App: React.FC = () => {
         <div className="w-full h-full">
           <FullLyricsWindow
             media={media}
-            lyricsText={lyricsText}
+            lyricsData={lyricsData}
             theme={theme}
             onToggleTheme={handleToggleTheme}
+            onSeek={handleSeek}
             onClose={handleCloseLyricsWindow}
             onStartDrag={handleStartDrag}
           />

@@ -1,13 +1,23 @@
 import React from "react";
-import { FileText, Moon, Power, RefreshCw, Sun } from "lucide-react";
+import {
+  FileText,
+  Moon,
+  PanelTop,
+  Power,
+  RectangleHorizontal,
+  RefreshCw,
+  Sun,
+} from "lucide-react";
 import { IslandThemeTokens } from "./helpers";
 
 interface ContextMenuProps {
   position: { x: number; y: number };
   tokens: IslandThemeTokens;
   isLyricsOpen: boolean;
+  barStyle: "notch" | "island";
   onCloseMenu: () => void;
   onRefresh: () => void;
+  onToggleBarStyle: () => void;
   onToggleLyrics: () => void;
   onToggleTheme: () => void;
   onQuit: () => void;
@@ -18,8 +28,10 @@ export const ContextMenu: React.FC<ContextMenuProps> = React.memo(
     position,
     tokens,
     isLyricsOpen,
+    barStyle,
     onCloseMenu,
     onRefresh,
+    onToggleBarStyle,
     onToggleLyrics,
     onToggleTheme,
     onQuit,
@@ -37,7 +49,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = React.memo(
           }}
         />
         <div
-          className={`context-menu-pop fixed z-[100] w-[184px] p-1 rounded-xl border shadow-2xl select-none ${
+          className={`context-menu-pop fixed z-[100] w-[192px] p-1 rounded-xl border shadow-2xl select-none ${
             isLight
               ? "bg-[#f8f8f7] border-zinc-300 text-zinc-900 shadow-black/15"
               : "bg-[#121216] border-zinc-800 text-zinc-100 shadow-black/90"
@@ -52,6 +64,23 @@ export const ContextMenu: React.FC<ContextMenuProps> = React.memo(
           >
             <RefreshCw className="w-3.5 h-3.5 text-accent" />
             <span>Refresh &amp; Center</span>
+          </button>
+
+          <button
+            onClick={() => {
+              onCloseMenu();
+              onToggleBarStyle();
+            }}
+            className={`w-full px-2.5 py-1.5 rounded-lg text-[11px] font-medium flex items-center gap-2 transition-colors ${focusRing} ${
+              isLight ? "hover:bg-zinc-200/80" : "hover:bg-zinc-800"
+            }`}
+          >
+            {barStyle === "notch" ? (
+              <RectangleHorizontal className={`w-3.5 h-3.5 ${mutedText}`} />
+            ) : (
+              <PanelTop className={`w-3.5 h-3.5 ${mutedText}`} />
+            )}
+            <span>{barStyle === "notch" ? "Floating Island Style" : "Top Notch Style"}</span>
           </button>
 
           <button

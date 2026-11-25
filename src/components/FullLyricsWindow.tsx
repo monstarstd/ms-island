@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   X,
@@ -16,33 +16,57 @@ import {
   Plus,
   RotateCcw,
 } from "lucide-react";
-import { MediaTrack } from "../types/media";
+import { LyricsPayload, LyricsSuggestion, MediaTrack } from "../types/media";
 import { ThemeMode } from "../types/theme";
 import { copyTextReliable, formatTime } from "./island/helpers";
 
-interface LyricsSuggestion {
-  id: number;
-  trackName: string;
-  artistName: string;
-  albumName: string;
-  durationSec: number;
-  lyrics: string;
+interface SyncedLine {
+  timeSec: number;
+  text: string;
+}
+
+function parseLrcLines(lrc: string | null | undefined): SyncedLine[] {
+  if (!lrc) return [];
+  const lines: SyncedLine[] = [];
+  const timeRe = /\[(\d{1,2}):(\d{2})(?:\.(\d{1,3}))?\]/g;
+
+  for (const rawLine of lrc.split(/\r?\n/)) {
+    const matches = [...rawLine.matchAll(timeRe)];
+    if (matches.length === 0) continue;
+    const text = rawLine.replace(timeRe, "").trim();
+    if (!text) continue;
+    for (const m of matches) {
+      const min = Number(m[1]);
+      const sec = Number(m[2]);
+      const fracRaw = m[3] || "0";
+      const frac = Number(fracRaw) / Math.pow(10, fracRaw.length);
+      const timeSec = min * 60 + sec + frac;
+      if (!Number.isNaN(timeSec)) {
+        lines.push({ timeSec, text });
+      }
+    }
+  }
+
+  lines.sort((a, b) => a.timeSec - b.timeSec);
+  return lines;
 }
 
 interface FullLyricsWindowProps {
   media: MediaTrack;
-  lyricsText: string;
+  lyricsData: LyricsPayload;
   theme: ThemeMode;
   onToggleTheme: () => void;
+  onSeek: (positionSec: number) => void;
   onClose: () => void;
   onStartDrag: () => void;
 }
 
 export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
   media,
-  lyricsText,
+  lyricsData,
   theme,
   onToggleTheme,
+  onSeek,
   onClose,
   onStartDrag,
 }) => {
@@ -50,7 +74,7 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
   const [copiedTrack, setCopiedTrack] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [isSearching, setIsSearching] = useState(false);
-  const [customLyrics, setCustomLyrics] = useState<string | null>(null);
+  const [customPayload, setCustomPayload] = useState<LyricsPayload | null>(null);
   const [customMeta, setCustomMeta] = useState<{ title: string; artist: string } | null>(null);
 
   // Live autocomplete suggestions
@@ -60,6 +84,21 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
   const [activeIndex, setActiveIndex] = useState(-1);
   const suggestReqIdRef = useRef(0);
   const searchWrapRef = useRef<HTMLDivElement | null>(null);
+
+  // Synced vs Static mode + smooth playback interpolation
+  const [lyricsMode, setLyricsMode] = useState<"synced" | "static">(() => {
+    const saved = localStorage.getItem("ms-island-lyrics-mode");
+    return saved === "static" ? "static" : "synced";
+  });
+  const [livePosSec, setLivePosSec] = useState<number>(media.positionSec || 0);
+  const syncAnchorRef = useRef<{ basePos: number; updatedAt: number }>({
+    basePos: media.positionSec || 0,
+    updatedAt: performance.now(),
+  });
+  const [manualScrollPaused, setManualScrollPaused] = useState(false);
+  const manualScrollTimerRef = useRef<number | null>(null);
+  const lyricsScrollRef = useRef<HTMLDivElement | null>(null);
+  const lineRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
   const [isPinned, setIsPinned] = useState(true);
   const [backdropMode, setBackdropMode] = useState<"solid" | "acrylic">(() => {
@@ -88,13 +127,97 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
     localStorage.setItem("ms-island-lyrics-backdrop", next);
   };
 
-  // Reset custom manual lyrics when a new track plays
-  useEffect(() => {
-    setCustomLyrics(null);
-    setCustomMeta(null);
-  }, [media.title]);
+  const handleSetLyricsMode = (next: "synced" | "static") => {
+    setLyricsMode(next);
+    localStorage.setItem("ms-island-lyrics-mode", next);
+    setManualScrollPaused(false);
+  };
 
-  // Debounced live LRCLIB autocomplete while typing
+  // Auto-clear manual search & suggestions whenever the active playing track changes
+  useEffect(() => {
+    setCustomPayload(null);
+    setCustomMeta(null);
+    setSearchQuery("");
+    setSuggestions([]);
+    setDropdownOpen(false);
+    setActiveIndex(-1);
+    setManualScrollPaused(false);
+    if (lyricsScrollRef.current) {
+      lyricsScrollRef.current.scrollTop = 0;
+    }
+  }, [media.title, media.artist]);
+
+  // Active lyrics payload & parsed LRC lines
+  const activePayload = customPayload || lyricsData;
+  const displayedLyrics = activePayload.plainLyrics || "";
+  const syncedLines = useMemo(
+    () => parseLrcLines(activePayload.syncedLyrics),
+    [activePayload.syncedLyrics]
+  );
+  const hasSynced = syncedLines.length > 0;
+  const isSyncedActive = lyricsMode === "synced" && hasSynced;
+
+  // Sync anchor whenever SMTC reports a new playback position
+  useEffect(() => {
+    syncAnchorRef.current = {
+      basePos: media.positionSec || 0,
+      updatedAt: performance.now(),
+    };
+    setLivePosSec(media.positionSec || 0);
+  }, [media.positionSec, media.isPlaying, media.title]);
+
+  // Smooth interpolation tick ONLY while Synced view is active and audio is playing (0% CPU otherwise)
+  useEffect(() => {
+    if (!isSyncedActive || !media.isPlaying) return;
+    const id = window.setInterval(() => {
+      const elapsed = (performance.now() - syncAnchorRef.current.updatedAt) / 1000;
+      const next = syncAnchorRef.current.basePos + elapsed;
+      setLivePosSec(media.durationSec > 0 ? Math.min(media.durationSec, next) : next);
+    }, 140);
+    return () => clearInterval(id);
+  }, [isSyncedActive, media.isPlaying, media.durationSec]);
+
+  const activeLineIdx = useMemo(() => {
+    if (!isSyncedActive || syncedLines.length === 0) return -1;
+    const t = livePosSec + 0.25;
+    let idx = -1;
+    for (let i = 0; i < syncedLines.length; i++) {
+      if (syncedLines[i].timeSec <= t) idx = i;
+      else break;
+    }
+    return idx;
+  }, [isSyncedActive, syncedLines, livePosSec]);
+
+  // Smooth auto-scroll active synced line into comfortable reading position (~36% from top)
+  useEffect(() => {
+    if (!isSyncedActive || manualScrollPaused || activeLineIdx < 0) return;
+    const container = lyricsScrollRef.current;
+    const lineEl = lineRefs.current[activeLineIdx];
+    if (!container || !lineEl) return;
+
+    const targetTop = Math.max(
+      0,
+      lineEl.offsetTop - container.clientHeight * 0.36 + lineEl.clientHeight / 2
+    );
+    container.scrollTo({ top: targetTop, behavior: "smooth" });
+  }, [activeLineIdx, isSyncedActive, manualScrollPaused]);
+
+  const pauseAutoScrollTemporarily = () => {
+    if (!isSyncedActive) return;
+    setManualScrollPaused(true);
+    if (manualScrollTimerRef.current) clearTimeout(manualScrollTimerRef.current);
+    manualScrollTimerRef.current = window.setTimeout(() => {
+      setManualScrollPaused(false);
+    }, 5000);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (manualScrollTimerRef.current) clearTimeout(manualScrollTimerRef.current);
+    };
+  }, []);
+
+  // Debounced live smart LRCLIB autocomplete while typing
   useEffect(() => {
     const q = searchQuery.trim();
     const isTauri = !!(window as any).__TAURI_INTERNALS__;
@@ -121,7 +244,7 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
           setIsSuggesting(false);
         }
       }
-    }, 320);
+    }, 300);
 
     return () => clearTimeout(timer);
   }, [searchQuery]);
@@ -178,7 +301,14 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
   };
 
   const handleSelectSuggestion = (item: LyricsSuggestion) => {
-    setCustomLyrics(item.lyrics);
+    setCustomPayload({
+      plainLyrics: item.lyrics,
+      syncedLyrics: item.syncedLyrics || null,
+      trackName: item.trackName,
+      artistName: item.artistName,
+      status: "found",
+      suggestions: [],
+    });
     setCustomMeta({
       title: item.trackName,
       artist: item.artistName || item.albumName || "Manual Selection",
@@ -186,20 +316,21 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
     setSearchQuery(item.artistName ? `${item.trackName} - ${item.artistName}` : item.trackName);
     setDropdownOpen(false);
     setActiveIndex(-1);
+    setManualScrollPaused(false);
   };
 
   const handleResetToPlaying = () => {
-    setCustomLyrics(null);
+    setCustomPayload(null);
     setCustomMeta(null);
     setSearchQuery("");
     setSuggestions([]);
     setDropdownOpen(false);
+    setManualScrollPaused(false);
   };
 
   const handleCopyLyrics = () => {
-    const textToCopy = customLyrics || lyricsText;
-    if (textToCopy) {
-      copyTextReliable(textToCopy);
+    if (displayedLyrics) {
+      copyTextReliable(displayedLyrics);
       setCopiedLyrics(true);
       setTimeout(() => setCopiedLyrics(false), 1800);
     }
@@ -228,9 +359,15 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
     setDropdownOpen(false);
     setIsSearching(true);
     try {
-      const res = await invoke<string>("search_lyrics_manual", { query: searchQuery.trim() });
-      setCustomLyrics(res);
-      setCustomMeta({ title: searchQuery.trim(), artist: "Manual Search" });
+      const res = await invoke<LyricsPayload>("search_lyrics_manual", {
+        query: searchQuery.trim(),
+      });
+      setCustomPayload(res);
+      setCustomMeta({
+        title: res.trackName || searchQuery.trim(),
+        artist: res.artistName || "Manual Search",
+      });
+      setManualScrollPaused(false);
     } catch (err) {
       console.error("Manual search failed:", err);
     } finally {
@@ -249,7 +386,13 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
     }
   };
 
-  const displayedLyrics = customLyrics || lyricsText;
+  const handleSeekLine = (timeSec: number) => {
+    setManualScrollPaused(false);
+    syncAnchorRef.current = { basePos: timeSec, updatedAt: performance.now() };
+    setLivePosSec(timeSec);
+    onSeek(Math.floor(timeSec));
+  };
+
   const displayedTitle = customMeta?.title || media.title || "Full Lyrics";
   const displayedArtist = customMeta?.artist || media.artist || "No active media detected";
 
@@ -268,6 +411,26 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
     : isLight
       ? "text-zinc-700 hover:bg-zinc-200"
       : "text-zinc-400 hover:text-white hover:bg-zinc-800";
+
+  const pillGroupCls = isAcrylic
+    ? isLight
+      ? "bg-black/[0.06] border-black/12"
+      : "bg-white/[0.07] border-white/12"
+    : isLight
+      ? "bg-zinc-200/80 border-zinc-300"
+      : "bg-[#0c0c0e] border-zinc-800";
+
+  const pillActiveCls = isAcrylic
+    ? isLight
+      ? "bg-white/90 text-zinc-950 font-semibold shadow-sm"
+      : "bg-white/20 text-white font-semibold"
+    : isLight
+      ? "bg-white text-zinc-950 font-semibold shadow-sm"
+      : "bg-zinc-800 text-white font-semibold";
+
+  const pillIdleCls = isLight
+    ? "text-zinc-600 hover:text-zinc-950"
+    : "text-zinc-400 hover:text-white";
 
   const shellRadiusCls = isAcrylic ? "rounded-lg" : "rounded-2xl";
   const topRadiusCls = isAcrylic ? "rounded-t-lg" : "rounded-t-2xl";
@@ -301,7 +464,7 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
               : "bg-[#121215]"
         }`}
       >
-        {/* Draggable Compact Header (optimized for 340px width so title stays readable) */}
+        {/* Draggable Compact Header */}
         <div
           className={`flex items-center justify-between px-3 py-2 border-b cursor-move transition-colors ${dividerCls}`}
           onMouseDown={(e) => {
@@ -318,13 +481,18 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
                 className="w-6 h-6 rounded-md object-cover flex-shrink-0 border border-zinc-700/40"
               />
             ) : (
-              <FileText className={`w-3.5 h-3.5 flex-shrink-0 ${isLight ? "text-zinc-600" : "text-zinc-400"}`} />
+              <FileText
+                className={`w-3.5 h-3.5 flex-shrink-0 ${isLight ? "text-zinc-600" : "text-zinc-400"}`}
+              />
             )}
             <div className="min-w-0">
               <h3 className="text-[11px] font-semibold truncate leading-tight" title={displayedTitle}>
                 {displayedTitle}
               </h3>
-              <p className={`text-[10px] truncate leading-tight mt-0.5 ${isLight ? "text-zinc-600" : "text-zinc-400"}`} title={displayedArtist}>
+              <p
+                className={`text-[10px] truncate leading-tight mt-0.5 ${isLight ? "text-zinc-600" : "text-zinc-400"}`}
+                title={displayedArtist}
+              >
                 {displayedArtist}
               </p>
             </div>
@@ -371,9 +539,7 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
             <button
               onClick={handleTogglePin}
               className={`p-1.5 rounded-md transition-all focus:outline-none focus-visible:ring-1 focus-visible:ring-accent active:scale-[0.95] ${
-                isPinned
-                  ? "text-accent hover:bg-white/10"
-                  : iconBtnCls
+                isPinned ? "text-accent hover:bg-white/10" : iconBtnCls
               }`}
               title={isPinned ? "Always on top (Click to unpin)" : "Pin always on top"}
             >
@@ -391,7 +557,9 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
             <button
               onClick={onClose}
               className={`p-1.5 rounded-md transition-all focus:outline-none focus-visible:ring-1 focus-visible:ring-accent active:scale-[0.95] ${
-                isLight ? "text-zinc-600 hover:text-red-600 hover:bg-black/10" : "text-zinc-400 hover:text-red-400 hover:bg-white/10"
+                isLight
+                  ? "text-zinc-600 hover:text-red-600 hover:bg-black/10"
+                  : "text-zinc-400 hover:text-red-400 hover:bg-white/10"
               }`}
               title="Close Lyrics Window (Esc)"
             >
@@ -400,7 +568,7 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
           </div>
         </div>
 
-        {/* Manual Search Bar + Live Autocomplete Dropdown */}
+        {/* Manual Search Bar + Smart Live Autocomplete Dropdown */}
         <div ref={searchWrapRef} className="relative">
           <form
             onSubmit={handleManualSearch}
@@ -457,17 +625,19 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
             </button>
           </form>
 
-          {/* Live Suggestions Dropdown */}
+          {/* Smart Live Suggestions Dropdown */}
           {dropdownOpen && searchQuery.trim().length >= 2 && (suggestions.length > 0 || isSuggesting) && (
             <div
-              className={`absolute left-2.5 right-2.5 top-[calc(100%-2px)] z-40 rounded-xl border shadow-2xl overflow-hidden max-h-[220px] overflow-y-auto ${
+              className={`absolute left-2.5 right-2.5 top-[calc(100%-2px)] z-40 rounded-xl border shadow-2xl overflow-hidden max-h-[235px] overflow-y-auto ${
                 isLight
                   ? "bg-[#f8f8f7] border-zinc-300 text-zinc-900 shadow-black/20"
                   : "bg-[#141419] border-zinc-800 text-zinc-100 shadow-black/80"
               }`}
             >
               {suggestions.length === 0 && isSuggesting ? (
-                <div className={`px-3 py-2.5 text-[11px] flex items-center gap-2 ${isLight ? "text-zinc-600" : "text-zinc-400"}`}>
+                <div
+                  className={`px-3 py-2.5 text-[11px] flex items-center gap-2 ${isLight ? "text-zinc-600" : "text-zinc-400"}`}
+                >
                   <Loader2 className="w-3 h-3 animate-spin text-accent" />
                   <span>Finding matching songs...</span>
                 </div>
@@ -498,16 +668,37 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
                           <div className="text-[11px] font-medium truncate leading-tight">
                             {item.trackName}
                           </div>
-                          <div className={`text-[10px] truncate leading-tight mt-0.5 ${isLight ? "text-zinc-600" : "text-zinc-400"}`}>
+                          <div
+                            className={`text-[10px] truncate leading-tight mt-0.5 ${isLight ? "text-zinc-600" : "text-zinc-400"}`}
+                          >
                             {item.artistName}
                             {item.albumName ? ` · ${item.albumName}` : ""}
                           </div>
                         </div>
-                        {item.durationSec > 0 && (
-                          <span className={`text-[10px] font-mono tabular-nums flex-shrink-0 ${isHighlighted ? "text-accent font-semibold" : isLight ? "text-zinc-500" : "text-zinc-500"}`}>
-                            {formatTime(item.durationSec)}
-                          </span>
-                        )}
+                        <div className="flex items-center gap-1.5 flex-shrink-0">
+                          {item.syncedLyrics && (
+                            <span
+                              className={`text-[8px] font-semibold uppercase tracking-wider px-1 py-0.5 rounded ${
+                                isLight
+                                  ? "bg-accent/15 text-accent"
+                                  : "bg-accent/15 text-accent"
+                              }`}
+                            >
+                              Sync
+                            </span>
+                          )}
+                          {item.durationSec > 0 && (
+                            <span
+                              className={`text-[10px] font-mono tabular-nums ${
+                                isHighlighted
+                                  ? "text-accent font-semibold"
+                                  : "text-zinc-500"
+                              }`}
+                            >
+                              {formatTime(item.durationSec)}
+                            </span>
+                          )}
+                        </div>
                       </button>
                     );
                   })}
@@ -518,45 +709,109 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
         </div>
       </div>
 
-      {/* LYRICS BODY BOX: Solid (always 100%) | Acrylic (unified glass) */}
-      <div
-        className={`flex-1 px-4 py-4 overflow-y-auto select-text transition-[background-color] duration-150 ease-out ${
-          isAcrylic
-            ? "bg-transparent"
-            : isLight
-              ? "bg-[#f8f8f7]"
-              : "bg-[#0c0c0e]"
-        }`}
-      >
-        {displayedLyrics ? (
-          <div
-            className={`leading-[1.75] whitespace-pre-line tracking-[0.01em] transition-[color] duration-150 ${
-              isLight ? "text-zinc-900" : "text-zinc-100"
+      {/* LYRICS BODY: Synced interactive lines OR Static plain lyrics */}
+      <div className="relative flex-1 min-h-0 flex flex-col">
+        <div
+          ref={lyricsScrollRef}
+          onWheel={pauseAutoScrollTemporarily}
+          onTouchStart={pauseAutoScrollTemporarily}
+          className={`flex-1 px-4 py-4 overflow-y-auto transition-[background-color] duration-150 ease-out ${
+            isSyncedActive ? "select-none" : "select-text"
+          } ${
+            isAcrylic
+              ? "bg-transparent"
+              : isLight
+                ? "bg-[#f8f8f7]"
+                : "bg-[#0c0c0e]"
+          }`}
+        >
+          {activePayload.status === "loading" ? (
+            <div className="w-full h-full flex flex-col items-center justify-center text-center py-8 px-3 gap-2">
+              <Loader2 className="w-4 h-4 animate-spin text-accent" />
+              <p className={`text-[11px] font-medium ${isLight ? "text-zinc-600" : "text-zinc-400"}`}>
+                Searching for lyrics...
+              </p>
+            </div>
+          ) : isSyncedActive ? (
+            <div className="space-y-1.5 pb-16 pt-2">
+              {syncedLines.map((line, idx) => {
+                const isActive = idx === activeLineIdx;
+                const isPast = activeLineIdx >= 0 && idx < activeLineIdx;
+                return (
+                  <button
+                    key={`${line.timeSec}-${idx}`}
+                    ref={(el) => {
+                      lineRefs.current[idx] = el;
+                    }}
+                    type="button"
+                    onClick={() => handleSeekLine(line.timeSec)}
+                    title={`Jump to ${formatTime(Math.floor(line.timeSec))}`}
+                    className={`w-full text-left border-l-2 pl-2.5 py-1 rounded-r-md transition-colors duration-150 leading-[1.6] tracking-[0.01em] focus:outline-none focus-visible:ring-1 focus-visible:ring-accent ${
+                      isActive
+                        ? isLight
+                          ? "border-accent text-zinc-950 font-semibold bg-black/[0.04]"
+                          : "border-accent text-white font-semibold bg-white/[0.06]"
+                        : isPast
+                          ? isLight
+                            ? "border-transparent text-zinc-500/80 hover:text-zinc-900 hover:bg-black/[0.03]"
+                            : "border-transparent text-zinc-500 hover:text-zinc-200 hover:bg-white/[0.04]"
+                          : isLight
+                            ? "border-transparent text-zinc-700/85 hover:text-zinc-950 hover:bg-black/[0.03]"
+                            : "border-transparent text-zinc-300/85 hover:text-white hover:bg-white/[0.04]"
+                    }`}
+                    style={{ fontSize: `${fontSize}px` }}
+                  >
+                    {line.text}
+                  </button>
+                );
+              })}
+            </div>
+          ) : displayedLyrics ? (
+            <div
+              className={`leading-[1.75] whitespace-pre-line tracking-[0.01em] transition-[color] duration-150 ${
+                isLight ? "text-zinc-900" : "text-zinc-100"
+              }`}
+              style={{ fontSize: `${fontSize}px` }}
+            >
+              {displayedLyrics}
+            </div>
+          ) : (
+            <div className="w-full h-full flex flex-col items-center justify-center text-center py-8 px-3">
+              <p className={`text-xs font-medium ${isLight ? "text-zinc-800" : "text-zinc-200"}`}>
+                Waiting for audio playback
+              </p>
+              <p className={`mt-1 text-[11px] ${isLight ? "text-zinc-600" : "text-zinc-400"}`}>
+                Play a track in YouTube or Spotify, or search above.
+              </p>
+            </div>
+          )}
+        </div>
+
+        {/* Snap-back pill when user scrolls manually during Synced mode */}
+        {isSyncedActive && manualScrollPaused && (
+          <button
+            type="button"
+            onClick={() => setManualScrollPaused(false)}
+            className={`absolute bottom-2.5 right-3 z-20 px-2.5 py-1 rounded-full text-[10px] font-semibold flex items-center gap-1.5 border shadow-lg transition-all active:scale-[0.96] ${
+              isLight
+                ? "bg-white/95 border-zinc-300 text-zinc-900 hover:bg-zinc-100"
+                : "bg-[#16161b]/95 border-zinc-700 text-zinc-100 hover:bg-zinc-800"
             }`}
-            style={{ fontSize: `${fontSize}px` }}
           >
-            {displayedLyrics}
-          </div>
-        ) : (
-          <div className="w-full h-full flex flex-col items-center justify-center text-center py-8 px-3">
-            <p className={`text-xs font-medium ${isLight ? "text-zinc-800" : "text-zinc-200"}`}>
-              Waiting for audio playback
-            </p>
-            <p className={`mt-1 text-[11px] ${isLight ? "text-zinc-600" : "text-zinc-400"}`}>
-              Play a track in YouTube or Spotify, or search above.
-            </p>
-          </div>
+            <span className="w-1.5 h-1.5 rounded-full bg-accent" />
+            <span>Resume Sync</span>
+          </button>
         )}
       </div>
 
-      {/* Footer: 2-Mode Selector (Solid / Acrylic) + Font Size Controls */}
+      {/* Footer: Backdrop (Solid / Acrylic) + Mode (Synced / Static) + Font Size */}
       <div
         onMouseDown={(e) => {
           if (e.button !== 0) return;
           if ((e.target as HTMLElement).closest("button")) return;
           onStartDrag();
         }}
-        className={`px-3 py-1.5 border-t flex items-center justify-between text-[11px] cursor-move transition-[background-color] duration-150 ${dividerCls} ${
+        className={`px-2.5 py-1.5 border-t flex items-center justify-between gap-1.5 text-[11px] cursor-move transition-[background-color] duration-150 ${dividerCls} ${
           isAcrylic
             ? isLight
               ? "bg-transparent text-zinc-700"
@@ -566,44 +821,64 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
               : "bg-[#121215] text-zinc-400"
         }`}
       >
-        <div
-          className={`grid grid-cols-2 p-0.5 rounded-lg border text-[10px] font-medium ${
-            isAcrylic
-              ? isLight
-                ? "bg-black/[0.06] border-black/12"
-                : "bg-white/[0.07] border-white/12"
-              : isLight
-                ? "bg-zinc-200/80 border-zinc-300"
-                : "bg-[#0c0c0e] border-zinc-800"
-          }`}
-          title="Lyrics background style"
-        >
-          {(["solid", "acrylic"] as const).map((mode) => (
+        <div className="flex items-center gap-1.5">
+          {/* Backdrop Toggle */}
+          <div
+            className={`grid grid-cols-2 p-0.5 rounded-lg border text-[10px] font-medium ${pillGroupCls}`}
+            title="Lyrics background style"
+          >
+            {(["solid", "acrylic"] as const).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                onClick={() => handleSetBackdrop(mode)}
+                className={`px-2 py-0.5 rounded-md capitalize transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-accent ${
+                  backdropMode === mode ? pillActiveCls : pillIdleCls
+                }`}
+              >
+                {mode}
+              </button>
+            ))}
+          </div>
+
+          {/* Synced / Static Toggle */}
+          <div
+            className={`grid grid-cols-2 p-0.5 rounded-lg border text-[10px] font-medium ${pillGroupCls}`}
+            title={
+              hasSynced
+                ? "Switch between Synced (auto-scroll + click-to-seek) and Static lyrics"
+                : "No synced timestamps available for this track (showing Static)"
+            }
+          >
             <button
-              key={mode}
-              onClick={() => handleSetBackdrop(mode)}
-              className={`px-2.5 py-0.5 rounded-md capitalize transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-accent ${
-                backdropMode === mode
-                  ? isAcrylic
-                    ? isLight
-                      ? "bg-white/90 text-zinc-950 font-semibold shadow-sm"
-                      : "bg-white/20 text-white font-semibold"
-                    : isLight
-                      ? "bg-white text-zinc-950 font-semibold shadow-sm"
-                      : "bg-zinc-800 text-white font-semibold"
-                  : isLight
-                    ? "text-zinc-600 hover:text-zinc-950"
-                    : "text-zinc-400 hover:text-white"
+              type="button"
+              onClick={() => handleSetLyricsMode("synced")}
+              className={`px-2 py-0.5 rounded-md transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-accent ${
+                isSyncedActive
+                  ? pillActiveCls
+                  : !hasSynced
+                    ? "opacity-40 cursor-not-allowed " + pillIdleCls
+                    : pillIdleCls
               }`}
             >
-              {mode}
+              Synced
             </button>
-          ))}
+            <button
+              type="button"
+              onClick={() => handleSetLyricsMode("static")}
+              className={`px-2 py-0.5 rounded-md transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-accent ${
+                !isSyncedActive ? pillActiveCls : pillIdleCls
+              }`}
+            >
+              Static
+            </button>
+          </div>
         </div>
 
-        <div className="flex items-center gap-1">
-          <span className="text-[10px] mr-0.5">Text</span>
+        {/* Font Size Controls */}
+        <div className="flex items-center gap-1 flex-shrink-0" title="Lyrics font size">
           <button
+            type="button"
             onClick={() => adjustFontSize(-1)}
             disabled={fontSize <= 12}
             className={`p-1 rounded border disabled:opacity-35 transition-colors ${btnCls}`}
@@ -611,8 +886,9 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
           >
             <Minus className="w-2.5 h-2.5" />
           </button>
-          <span className="text-[10px] font-mono tabular-nums w-5 text-center">{fontSize}</span>
+          <span className="text-[10px] font-mono tabular-nums w-4 text-center">{fontSize}</span>
           <button
+            type="button"
             onClick={() => adjustFontSize(1)}
             disabled={fontSize >= 20}
             className={`p-1 rounded border disabled:opacity-35 transition-colors ${btnCls}`}

@@ -10,6 +10,8 @@ import {
   Inbox,
   Moon,
   Music,
+  PanelTop,
+  RectangleHorizontal,
   StickyNote,
   Sun,
   Timer as TimerIcon,
@@ -97,6 +99,10 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   const [isHovered, setIsHovered] = useState(false);
   const [activeTab, setActiveTab] = useState<TabType>("music");
   const [dockEdge, setDockEdge] = useState<"top" | "left" | "right" | "floating">("top");
+  const [barStyle, setBarStyle] = useState<"notch" | "island">(() => {
+    const saved = localStorage.getItem("ms-island-bar-style");
+    return saved === "island" ? "island" : "notch";
+  });
   const [isMoving, setIsMoving] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const hoverTimeoutRef = useRef<number | null>(null);
@@ -791,10 +797,23 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
     hoverEnterTimeoutRef.current = null;
     hoverTimeoutRef.current = null;
-    const x = Math.max(8, Math.min(window.innerWidth - 194, e.clientX));
-    const y = Math.max(8, Math.min(window.innerHeight - 156, e.clientY + 6));
+    const x = Math.max(8, Math.min(window.innerWidth - 202, e.clientX));
+    const y = Math.max(8, Math.min(window.innerHeight - 190, e.clientY + 6));
     setContextMenu({ x, y });
   };
+
+  const handleToggleBarStyle = useCallback(() => {
+    setBarStyle((prev) => {
+      const next = prev === "notch" ? "island" : "notch";
+      localStorage.setItem("ms-island-bar-style", next);
+      showToast(
+        "refresh",
+        next === "island" ? "Floating Island Style" : "Top Notch Style",
+        1700
+      );
+      return next;
+    });
+  }, [showToast]);
 
   const handleRefreshIsland = useCallback(async () => {
     setContextMenu(null);
@@ -873,6 +892,9 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     return 258;
   })();
 
+  const isIslandTop = dockEdge === "top" && barStyle === "island";
+  const isDetachedPill = dockEdge === "floating" || isIslandTop;
+
   const outerAlignCls =
     dockEdge === "left"
       ? "justify-start pt-2"
@@ -880,27 +902,33 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
         ? "justify-end pt-2"
         : dockEdge === "floating"
           ? "justify-center pt-2"
-          : "justify-center pt-0";
+          : barStyle === "island"
+            ? "justify-center pt-[10px]"
+            : "justify-center pt-0";
 
   const shellShapeCls = (() => {
     if (isHovered) {
-      if (dockEdge === "top") return "h-[262px] rounded-t-none rounded-b-[22px] border-t-0 p-3.5";
+      if (dockEdge === "top" && barStyle === "notch") {
+        return "h-[262px] rounded-t-none rounded-b-[22px] border-t-0 p-3.5";
+      }
       if (dockEdge === "left") return "h-[262px] rounded-l-none rounded-r-[22px] border-l-0 p-3.5";
       if (dockEdge === "right") return "h-[262px] rounded-r-none rounded-l-[22px] border-r-0 p-3.5";
-      return "h-[262px] rounded-[22px] p-3.5";
+      return "h-[262px] rounded-[22px] p-3.5 shadow-2xl shadow-black/45";
     }
-    if (dockEdge === "top") return "h-[36px] rounded-t-none rounded-b-[16px] border-t-0 px-3.5 py-1.5 cursor-pointer";
+    if (dockEdge === "top" && barStyle === "notch") {
+      return "h-[36px] rounded-t-none rounded-b-[16px] border-t-0 px-3.5 py-1.5 cursor-pointer";
+    }
     if (dockEdge === "left") return "h-[36px] rounded-l-none rounded-r-[18px] border-l-0 px-3.5 py-1.5 cursor-pointer";
     if (dockEdge === "right") return "h-[36px] rounded-r-none rounded-l-[18px] border-r-0 px-3.5 py-1.5 cursor-pointer";
-    return "h-[38px] rounded-[19px] px-4 py-1.5 cursor-pointer";
+    return "h-[38px] rounded-[19px] px-4 py-1.5 cursor-pointer shadow-lg shadow-black/35";
   })();
 
-  // 15. Sync Exact Interactive Bounds to Rust for Zero-Flicker Transparent Click-Through
+  // 15. Sync Exact Interactive Bounds to Rust (pad = 0 when idle so transparent gap above/around pill stays 100% click-through)
   useEffect(() => {
     if (!isTauri) return;
     const width = isHovered ? 516 : idleWidthPx;
-    const height = isHovered ? 262 : dockEdge === "floating" ? 38 : 36;
-    const y = dockEdge === "top" ? 0 : 8;
+    const height = isHovered ? 262 : isDetachedPill ? 38 : 36;
+    const y = dockEdge === "top" ? (barStyle === "island" ? 10 : 0) : 8;
     const winW = window.innerWidth || 560;
     const x =
       dockEdge === "left"
@@ -914,9 +942,20 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
       y,
       width,
       height,
+      pad: isHovered ? 2 : 0,
       fullWindow: Boolean(contextMenu || isDragOver || isMoving),
     }).catch(() => {});
-  }, [isTauri, isHovered, idleWidthPx, dockEdge, contextMenu, isDragOver, isMoving]);
+  }, [
+    isTauri,
+    isHovered,
+    idleWidthPx,
+    dockEdge,
+    barStyle,
+    isDetachedPill,
+    contextMenu,
+    isDragOver,
+    isMoving,
+  ]);
 
   const idleMediaProgress =
     !isHovered &&
@@ -1014,6 +1053,26 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
               </div>
 
               <div className="flex items-center gap-1.5">
+                <button
+                  onClick={handleToggleBarStyle}
+                  className={`h-7 w-7 flex items-center justify-center rounded-lg border transition-all ${tokens.focusRing} ${
+                    isLight
+                      ? "bg-zinc-200/80 border-zinc-300 text-zinc-800 hover:bg-zinc-300 active:scale-[0.95]"
+                      : "bg-[#141418] border-zinc-800 text-zinc-300 hover:text-white hover:bg-zinc-800 active:scale-[0.95]"
+                  }`}
+                  title={
+                    barStyle === "notch"
+                      ? "Idle Style: Top Notch (Click for Floating Island)"
+                      : "Idle Style: Floating Island (Click for Top Notch)"
+                  }
+                >
+                  {barStyle === "notch" ? (
+                    <RectangleHorizontal className="w-3.5 h-3.5" />
+                  ) : (
+                    <PanelTop className="w-3.5 h-3.5 text-accent" />
+                  )}
+                </button>
+
                 <button
                   onClick={onToggleTheme}
                   className={`h-7 w-7 flex items-center justify-center rounded-lg border transition-all ${tokens.focusRing} ${
@@ -1154,8 +1213,10 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
           position={contextMenu}
           tokens={tokens}
           isLyricsOpen={isLyricsOpen}
+          barStyle={barStyle}
           onCloseMenu={() => setContextMenu(null)}
           onRefresh={handleRefreshIsland}
+          onToggleBarStyle={handleToggleBarStyle}
           onToggleLyrics={onToggleLyricsWindow}
           onToggleTheme={onToggleTheme}
           onQuit={handleQuitApp}

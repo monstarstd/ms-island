@@ -41,6 +41,7 @@ struct IslandHitRect {
     y: f64,
     width: f64,
     height: f64,
+    pad: f64,
     full_window: bool,
 }
 
@@ -51,6 +52,7 @@ impl Default for IslandHitRect {
             y: 0.0,
             width: 258.0,
             height: 36.0,
+            pad: 0.0,
             full_window: false,
         }
     }
@@ -62,7 +64,7 @@ struct AppState {
     cached_thumbnail: Arc<Mutex<Option<String>>>,
     sys_monitor: Arc<Mutex<SystemMonitor>>,
     audio_spectrum: Arc<AudioSpectrumCapture>,
-    cached_lyrics: Arc<Mutex<String>>,
+    cached_lyrics: Arc<Mutex<lyrics::LyricsPayload>>,
     is_lyrics_open: Arc<Mutex<bool>>,
     clipboard_history: Arc<Mutex<ClipboardSyncPayload>>,
     auto_hide_fullscreen: Arc<AtomicBool>,
@@ -89,7 +91,7 @@ async fn get_audio_spectrum(state: State<'_, AppState>) -> Result<[f32; 8], ()> 
 }
 
 #[tauri::command]
-async fn get_full_lyrics(state: State<'_, AppState>) -> Result<String, ()> {
+async fn get_full_lyrics(state: State<'_, AppState>) -> Result<lyrics::LyricsPayload, ()> {
     Ok(lock_safe(&state.cached_lyrics).clone())
 }
 
@@ -107,13 +109,15 @@ fn is_lyrics_window_open(app: AppHandle, state: State<AppState>) -> bool {
 }
 
 #[tauri::command]
-async fn search_lyrics_manual(state: State<'_, AppState>, query: String) -> Result<String, ()> {
-    if let Some(lyrics) = lyrics::manual_search_lyrics(&query).await {
-        *lock_safe(&state.cached_lyrics) = lyrics.clone();
-        Ok(lyrics)
-    } else {
-        Ok(String::from("No lyrics found in LRCLIB or Genius for this query."))
+async fn search_lyrics_manual(
+    state: State<'_, AppState>,
+    query: String,
+) -> Result<lyrics::LyricsPayload, ()> {
+    let payload = lyrics::manual_search_lyrics(&query).await;
+    if payload.status == "found" {
+        *lock_safe(&state.cached_lyrics) = payload.clone();
     }
+    Ok(payload)
 }
 
 #[tauri::command]
@@ -595,6 +599,7 @@ fn set_island_hit_rect(
     y: f64,
     width: f64,
     height: f64,
+    pad: Option<f64>,
     full_window: bool,
 ) {
     *lock_safe(&state.hit_rect) = IslandHitRect {
@@ -602,6 +607,7 @@ fn set_island_hit_rect(
         y,
         width,
         height,
+        pad: pad.unwrap_or(0.0).max(0.0),
         full_window,
     };
 }
@@ -624,7 +630,7 @@ fn main() {
     let cached_thumbnail = Arc::new(Mutex::new(None::<String>));
     let sys_monitor = Arc::new(Mutex::new(SystemMonitor::new()));
     let audio_spectrum = Arc::new(AudioSpectrumCapture::start());
-    let cached_lyrics = Arc::new(Mutex::new(String::new()));
+    let cached_lyrics = Arc::new(Mutex::new(lyrics::LyricsPayload::idle()));
     let is_lyrics_open = Arc::new(Mutex::new(false));
     let clipboard_history = Arc::new(Mutex::new(ClipboardSyncPayload {
         items: Vec::new(),
@@ -957,6 +963,7 @@ fn main() {
                 let mut current_lyrics_title = String::new();
                 let mut had_active_track = false;
                 let mut last_emitted_track: Option<MediaTrackInfo> = None;
+                let lyrics_fetch_seq = Arc::new(AtomicU64::new(0));
 
                 loop {
                     let (track_opt, thumb_opt) = {
@@ -989,27 +996,25 @@ fn main() {
 
                                 let handle_inner = handle_media.clone();
                                 let cached_inner = cached_lyrics_clone.clone();
+                                let seq_inner = lyrics_fetch_seq.clone();
+                                let my_seq = lyrics_fetch_seq.fetch_add(1, Ordering::SeqCst) + 1;
 
-                                *lock_safe(&cached_inner) = String::from("Searching for lyrics...");
-                                let _ =
-                                    handle_inner.emit("lyrics-updated", "Searching for lyrics...");
+                                let loading_payload = lyrics::LyricsPayload::loading();
+                                *lock_safe(&cached_inner) = loading_payload.clone();
+                                let _ = handle_inner.emit("lyrics-updated", &loading_payload);
 
                                 tauri::async_runtime::spawn(async move {
-                                    let lyrics_text = match lyrics::fetch_full_lyrics(
+                                    let payload = lyrics::fetch_full_lyrics(
                                         &title_for_fetch,
                                         &artist_for_fetch,
                                         duration_sec,
                                     )
-                                    .await
-                                    {
-                                        Some(full) => full,
-                                        None => String::from(
-                                            "No lyrics found online for this track. Use the search bar above to search manually.",
-                                        ),
-                                    };
+                                    .await;
 
-                                    *lock_safe(&cached_inner) = lyrics_text.clone();
-                                    let _ = handle_inner.emit("lyrics-updated", &lyrics_text);
+                                    if seq_inner.load(Ordering::SeqCst) == my_seq {
+                                        *lock_safe(&cached_inner) = payload.clone();
+                                        let _ = handle_inner.emit("lyrics-updated", &payload);
+                                    }
                                 });
                             }
                         }
@@ -1018,9 +1023,11 @@ fn main() {
                                 had_active_track = false;
                                 last_emitted_track = None;
                                 current_lyrics_title.clear();
-                                *lock_safe(&cached_lyrics_clone) = String::new();
+                                lyrics_fetch_seq.fetch_add(1, Ordering::SeqCst);
+                                let idle_payload = lyrics::LyricsPayload::idle();
+                                *lock_safe(&cached_lyrics_clone) = idle_payload.clone();
                                 let _ = handle_media.emit("media-cleared", ());
-                                let _ = handle_media.emit("lyrics-updated", "");
+                                let _ = handle_media.emit("lyrics-updated", &idle_payload);
                             }
                         }
                     }
@@ -1239,12 +1246,11 @@ fn main() {
                 });
             });
 
-            // 3F. Smart Native Click-Through Hit-Test (transparent area around idle pill passes all clicks through!)
+            // 3F. Smart Native Click-Through Hit-Test (strictly matches visible idle pill bounds)
             if island_hwnd_raw != 0 {
                 let h_hit = app_handle.clone();
                 std::thread::spawn(move || {
                     let mut last_ignore = false;
-                    let pad_px: i32 = (4.0 * island_scale).round() as i32;
 
                     loop {
                         std::thread::sleep(Duration::from_millis(25));
@@ -1255,6 +1261,7 @@ fn main() {
                         } else if let Some(((cx, cy), (wx, wy))) =
                             system_tools::get_cursor_and_window_origin(island_hwnd_raw)
                         {
+                            let pad_px: i32 = (rect.pad * island_scale).round() as i32;
                             let left = wx + (rect.x * island_scale).floor() as i32 - pad_px;
                             let top = wy + (rect.y * island_scale).floor() as i32 - pad_px;
                             let right =
