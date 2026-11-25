@@ -583,6 +583,32 @@ fn reset_island_position(app: AppHandle) {
 }
 
 #[tauri::command]
+fn dock_island_to_edge(app: AppHandle, edge: String) {
+    if let (Ok(Some(monitor)), Some(island_win)) =
+        (app.primary_monitor(), app.get_webview_window("island"))
+    {
+        let screen_size = monitor.size();
+        let screen_w = screen_size.width as i32;
+        let screen_h = screen_size.height as i32;
+        let win_size = island_win.outer_size().ok();
+        let win_w = win_size.map(|s| s.width as i32).unwrap_or(560);
+        let win_h = win_size.map(|s| s.height as i32).unwrap_or(286);
+
+        let (x, y, normalized_edge) = match edge.as_str() {
+            "left" => (0, ((screen_h - win_h) / 2).max(48), "left"),
+            "right" => ((screen_w - win_w).max(0), ((screen_h - win_h) / 2).max(48), "right"),
+            _ => ((screen_w - win_w) / 2, 0, "top"),
+        };
+
+        let _ = island_win.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
+            x,
+            y,
+        }));
+        let _ = app.emit("island-dock-changed", normalized_edge);
+    }
+}
+
+#[tauri::command]
 fn quit_app(app: AppHandle) {
     app.exit(0);
 }
@@ -699,6 +725,7 @@ fn main() {
             reveal_shelf_file,
             start_file_drag_out,
             reset_island_position,
+            dock_island_to_edge,
             quit_app,
             start_window_drag,
             set_island_hit_rect
@@ -813,26 +840,35 @@ fn main() {
                             return;
                         }
 
-                        let (screen_w, win_w) = match (
+                        let (screen_w, screen_h, win_w, win_h) = match (
                             handle_drop.primary_monitor(),
                             handle_drop.get_webview_window("island"),
                         ) {
-                            (Ok(Some(m)), Some(w)) => (
-                                m.size().width as i32,
-                                w.outer_size().map(|s| s.width as i32).unwrap_or(560),
-                            ),
-                            _ => (1920, 560),
+                            (Ok(Some(m)), Some(w)) => {
+                                let sz = w.outer_size().ok();
+                                (
+                                    m.size().width as i32,
+                                    m.size().height as i32,
+                                    sz.map(|s| s.width as i32).unwrap_or(560),
+                                    sz.map(|s| s.height as i32).unwrap_or(286),
+                                )
+                            }
+                            _ => (1920, 1080, 560, 286),
                         };
 
                         let top_dist = pos.y;
                         let left_dist = pos.x;
                         let right_dist = screen_w - (pos.x + win_w);
 
-                        let edge = if top_dist <= 24 {
-                            "top"
-                        } else if left_dist <= 26 {
+                        let edge = if left_dist <= 40 && top_dist > 28 {
                             "left"
-                        } else if right_dist <= 26 {
+                        } else if right_dist <= 40 && top_dist > 28 {
+                            "right"
+                        } else if top_dist <= 24 {
+                            "top"
+                        } else if left_dist <= 40 {
+                            "left"
+                        } else if right_dist <= 40 {
                             "right"
                         } else {
                             "floating"
@@ -868,13 +904,20 @@ fn main() {
                                 let _ = h_snap.emit("island-moving", false);
                             }
 
+                            let max_side_y = (screen_h - win_h - 40).max(40);
+                            let clamped_side_y = cur_y.clamp(40, max_side_y);
                             let target = match edge_owned.as_str() {
                                 "top" if cur_y != 0 => {
                                     Some((cur_x.clamp(0, (screen_w - win_w).max(0)), 0))
                                 }
-                                "left" if cur_x != 0 => Some((0, cur_y.max(0))),
-                                "right" if cur_x != screen_w - win_w => {
-                                    Some(((screen_w - win_w).max(0), cur_y.max(0)))
+                                "left" if cur_x != 0 || cur_y != clamped_side_y => {
+                                    Some((0, clamped_side_y))
+                                }
+                                "right"
+                                    if cur_x != (screen_w - win_w).max(0)
+                                        || cur_y != clamped_side_y =>
+                                {
+                                    Some(((screen_w - win_w).max(0), clamped_side_y))
                                 }
                                 _ => None,
                             };

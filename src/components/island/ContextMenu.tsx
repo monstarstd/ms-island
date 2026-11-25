@@ -15,8 +15,10 @@ interface ContextMenuProps {
   tokens: IslandThemeTokens;
   isLyricsOpen: boolean;
   barStyle: "notch" | "island";
+  dockEdge: "top" | "left" | "right" | "floating";
   onCloseMenu: () => void;
   onRefresh: () => void;
+  onDockToEdge: (edge: "top" | "left" | "right") => void;
   onToggleBarStyle: () => void;
   onToggleLyrics: () => void;
   onToggleTheme: () => void;
@@ -29,8 +31,10 @@ export const ContextMenu: React.FC<ContextMenuProps> = React.memo(
     tokens,
     isLyricsOpen,
     barStyle,
+    dockEdge,
     onCloseMenu,
     onRefresh,
+    onDockToEdge,
     onToggleBarStyle,
     onToggleLyrics,
     onToggleTheme,
@@ -49,13 +53,51 @@ export const ContextMenu: React.FC<ContextMenuProps> = React.memo(
           }}
         />
         <div
-          className={`context-menu-pop fixed z-[100] w-[192px] p-1 rounded-xl border shadow-2xl select-none ${
+          className={`context-menu-pop fixed z-[100] w-[198px] p-1 rounded-xl border shadow-2xl select-none ${
             isLight
               ? "bg-[#f8f8f7] border-zinc-300 text-zinc-900 shadow-black/15"
               : "bg-[#121216] border-zinc-800 text-zinc-100 shadow-black/90"
           }`}
           style={{ left: `${position.x}px`, top: `${position.y}px` }}
         >
+          {/* Quick Dock Edge Selector */}
+          <div className="px-1.5 pt-1 pb-1.5">
+            <div className={`text-[9px] font-semibold uppercase tracking-wider mb-1 ${mutedText}`}>
+              Dock Position
+            </div>
+            <div
+              className={`grid grid-cols-3 p-0.5 rounded-lg border text-[10px] font-medium ${
+                isLight ? "bg-zinc-200/80 border-zinc-300" : "bg-[#0c0c0e] border-zinc-800"
+              }`}
+            >
+              {(["left", "top", "right"] as const).map((edge) => {
+                const active = dockEdge === edge;
+                return (
+                  <button
+                    key={edge}
+                    onClick={() => {
+                      onCloseMenu();
+                      onDockToEdge(edge);
+                    }}
+                    className={`py-0.5 rounded-md capitalize transition-colors ${focusRing} ${
+                      active
+                        ? isLight
+                          ? "bg-white text-zinc-950 font-semibold shadow-sm"
+                          : "bg-zinc-800 text-white font-semibold"
+                        : isLight
+                          ? "text-zinc-600 hover:text-zinc-950"
+                          : "text-zinc-400 hover:text-white"
+                    }`}
+                  >
+                    {edge}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className={`mb-1 h-px ${isLight ? "bg-zinc-200" : "bg-zinc-800"}`} />
+
           <button
             onClick={onRefresh}
             className={`w-full px-2.5 py-1.5 rounded-lg text-[11px] font-medium flex items-center gap-2 transition-colors ${focusRing} ${
@@ -80,7 +122,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = React.memo(
             ) : (
               <PanelTop className={`w-3.5 h-3.5 ${mutedText}`} />
             )}
-            <span>{barStyle === "notch" ? "Floating Island Style" : "Top Notch Style"}</span>
+            <span>{barStyle === "notch" ? "Floating Pill Style" : "Edge Notch Style"}</span>
           </button>
 
           <button

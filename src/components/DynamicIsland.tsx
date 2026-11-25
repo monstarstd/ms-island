@@ -797,10 +797,30 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
     hoverEnterTimeoutRef.current = null;
     hoverTimeoutRef.current = null;
-    const x = Math.max(8, Math.min(window.innerWidth - 202, e.clientX));
-    const y = Math.max(8, Math.min(window.innerHeight - 190, e.clientY + 6));
+    const x = Math.max(8, Math.min(window.innerWidth - 208, e.clientX));
+    const y = Math.max(8, Math.min(window.innerHeight - 238, e.clientY + 6));
     setContextMenu({ x, y });
   };
+
+  const handleDockToEdge = useCallback(
+    async (edge: "top" | "left" | "right") => {
+      setContextMenu(null);
+      setIsHovered(false);
+      setActiveTab("music");
+      setDockEdge(edge);
+      if (isTauri) {
+        try {
+          await invoke("dock_island_to_edge", { edge });
+        } catch {}
+      }
+      showToast(
+        "refresh",
+        edge === "left" ? "Docked Left" : edge === "right" ? "Docked Right" : "Docked Top",
+        1600
+      );
+    },
+    [isTauri, showToast]
+  );
 
   const handleToggleBarStyle = useCallback(() => {
     setBarStyle((prev) => {
@@ -892,50 +912,94 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     return 258;
   })();
 
-  const isIslandTop = dockEdge === "top" && barStyle === "island";
-  const isDetachedPill = dockEdge === "floating" || isIslandTop;
+  const isSideDock = dockEdge === "left" || dockEdge === "right";
+  const isIslandStyle = barStyle === "island";
+  const isDetachedPill = dockEdge === "floating" || isIslandStyle;
+
+  const sideIdleHeightPx = (() => {
+    if (showVolumeHud) return 166;
+    if (media.isPlaying) return 164;
+    if (toast) return 154;
+    if (activeDownload || isTimerRunning || isTimerFinished || isStopwatchRunning || isDragOver) {
+      return 150;
+    }
+    return 142;
+  })();
 
   const outerAlignCls =
     dockEdge === "left"
-      ? "justify-start pt-2"
+      ? isIslandStyle
+        ? "justify-start items-center pl-[10px]"
+        : "justify-start items-center pl-0"
       : dockEdge === "right"
-        ? "justify-end pt-2"
+        ? isIslandStyle
+          ? "justify-end items-center pr-[10px]"
+          : "justify-end items-center pr-0"
         : dockEdge === "floating"
-          ? "justify-center pt-2"
-          : barStyle === "island"
-            ? "justify-center pt-[10px]"
-            : "justify-center pt-0";
+          ? "justify-center items-start pt-2"
+          : isIslandStyle
+            ? "justify-center items-start pt-[10px]"
+            : "justify-center items-start pt-0";
 
   const shellShapeCls = (() => {
     if (isHovered) {
-      if (dockEdge === "top" && barStyle === "notch") {
-        return "h-[262px] rounded-t-none rounded-b-[22px] border-t-0 p-3.5";
+      if (dockEdge === "top" && !isIslandStyle) {
+        return "rounded-t-none rounded-b-[22px] border-t-0 p-3.5";
       }
-      if (dockEdge === "left") return "h-[262px] rounded-l-none rounded-r-[22px] border-l-0 p-3.5";
-      if (dockEdge === "right") return "h-[262px] rounded-r-none rounded-l-[22px] border-r-0 p-3.5";
-      return "h-[262px] rounded-[22px] p-3.5 shadow-2xl shadow-black/45";
+      if (dockEdge === "left" && !isIslandStyle) {
+        return "rounded-l-none rounded-r-[22px] border-l-0 p-3.5 shadow-2xl shadow-black/45";
+      }
+      if (dockEdge === "right" && !isIslandStyle) {
+        return "rounded-r-none rounded-l-[22px] border-r-0 p-3.5 shadow-2xl shadow-black/45";
+      }
+      return "rounded-[22px] p-3.5 shadow-2xl shadow-black/45";
     }
-    if (dockEdge === "top" && barStyle === "notch") {
-      return "h-[36px] rounded-t-none rounded-b-[16px] border-t-0 px-3.5 py-1.5 cursor-pointer";
+    if (dockEdge === "top" && !isIslandStyle) {
+      return "rounded-t-none rounded-b-[16px] border-t-0 px-3.5 py-1.5 cursor-pointer";
     }
-    if (dockEdge === "left") return "h-[36px] rounded-l-none rounded-r-[18px] border-l-0 px-3.5 py-1.5 cursor-pointer";
-    if (dockEdge === "right") return "h-[36px] rounded-r-none rounded-l-[18px] border-r-0 px-3.5 py-1.5 cursor-pointer";
-    return "h-[38px] rounded-[19px] px-4 py-1.5 cursor-pointer shadow-lg shadow-black/35";
+    if (dockEdge === "left") {
+      return isIslandStyle
+        ? "rounded-[23px] cursor-pointer shadow-lg shadow-black/40"
+        : "rounded-l-none rounded-r-[18px] border-l-0 cursor-pointer shadow-lg shadow-black/35";
+    }
+    if (dockEdge === "right") {
+      return isIslandStyle
+        ? "rounded-[23px] cursor-pointer shadow-lg shadow-black/40"
+        : "rounded-r-none rounded-l-[18px] border-r-0 cursor-pointer shadow-lg shadow-black/35";
+    }
+    return "rounded-[19px] px-4 py-1.5 cursor-pointer shadow-lg shadow-black/35";
   })();
 
-  // 15. Sync Exact Interactive Bounds to Rust (pad = 0 when idle so transparent gap above/around pill stays 100% click-through)
+  const shellWidthPx = isHovered ? 516 : isSideDock ? 46 : idleWidthPx;
+  const shellHeightPx = isHovered
+    ? 262
+    : isSideDock
+      ? sideIdleHeightPx
+      : isDetachedPill
+        ? 38
+        : 36;
+
+  // 15. Sync Exact Interactive Bounds to Rust (pad = 0 when idle so transparent gaps stay 100% click-through)
   useEffect(() => {
     if (!isTauri) return;
-    const width = isHovered ? 516 : idleWidthPx;
-    const height = isHovered ? 262 : isDetachedPill ? 38 : 36;
-    const y = dockEdge === "top" ? (barStyle === "island" ? 10 : 0) : 8;
+    const width = shellWidthPx;
+    const height = shellHeightPx;
     const winW = window.innerWidth || 560;
+    const winH = window.innerHeight || 286;
+    const sideOffset = isIslandStyle ? 10 : 0;
     const x =
       dockEdge === "left"
-        ? 0
+        ? sideOffset
         : dockEdge === "right"
-          ? Math.max(0, winW - width)
+          ? Math.max(0, winW - width - sideOffset)
           : Math.max(0, (winW - width) / 2);
+    const y = isSideDock
+      ? Math.max(0, (winH - height) / 2)
+      : dockEdge === "top"
+        ? isIslandStyle
+          ? 10
+          : 0
+        : 8;
 
     invoke("set_island_hit_rect", {
       x,
@@ -948,10 +1012,11 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   }, [
     isTauri,
     isHovered,
-    idleWidthPx,
+    shellWidthPx,
+    shellHeightPx,
     dockEdge,
-    barStyle,
-    isDetachedPill,
+    isIslandStyle,
+    isSideDock,
     contextMenu,
     isDragOver,
     isMoving,
@@ -968,22 +1033,34 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
       : null;
 
   return (
-    <div className={`relative w-full h-full flex items-start ${outerAlignCls}`}>
+    <div className={`relative w-full h-full flex ${outerAlignCls}`}>
       <div
         onMouseEnter={handleMouseEnter}
         onMouseLeave={handleMouseLeave}
         onWheel={handleWheelVolume}
         onContextMenu={handleContextMenu}
-        style={{ width: `${isHovered ? 516 : idleWidthPx}px` }}
+        style={{ width: `${shellWidthPx}px`, height: `${shellHeightPx}px` }}
         className={`relative island-shell-spring overflow-hidden border ${tokens.shellSurface} ${shellShapeCls} ${
           isMoving ? "scale-[1.016] shadow-2xl shadow-black/90" : "scale-100"
         } ${isDragOver ? "border-accent ring-1 ring-accent" : ""}`}
       >
-        {idleMediaProgress !== null && (
+        {idleMediaProgress !== null && !isSideDock && (
           <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-[1.5px] bg-transparent z-10">
             <div
               className="h-full w-full bg-accent origin-left transition-transform duration-300 ease-linear"
               style={{ transform: `scaleX(${idleMediaProgress.toFixed(4)})` }}
+            />
+          </div>
+        )}
+        {idleMediaProgress !== null && isSideDock && (
+          <div
+            className={`pointer-events-none absolute ${
+              isIslandStyle ? "top-5 bottom-5" : "top-3 bottom-3"
+            } w-[2px] bg-transparent z-10 ${dockEdge === "left" ? "right-0" : "left-0"}`}
+          >
+            <div
+              className="w-full h-full bg-accent origin-bottom transition-transform duration-300 ease-linear rounded-full"
+              style={{ transform: `scaleY(${idleMediaProgress.toFixed(4)})` }}
             />
           </div>
         )}
@@ -1006,6 +1083,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
             isStopwatchRunning={isStopwatchRunning}
             stopwatchTimeMs={stopwatchTimeMs}
             weather={weather}
+            vertical={isSideDock}
             onToggleLyricsWindow={onToggleLyricsWindow}
             onStartDrag={onStartDrag}
           />
@@ -1214,8 +1292,10 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
           tokens={tokens}
           isLyricsOpen={isLyricsOpen}
           barStyle={barStyle}
+          dockEdge={dockEdge}
           onCloseMenu={() => setContextMenu(null)}
           onRefresh={handleRefreshIsland}
+          onDockToEdge={handleDockToEdge}
           onToggleBarStyle={handleToggleBarStyle}
           onToggleLyrics={onToggleLyricsWindow}
           onToggleTheme={onToggleTheme}
