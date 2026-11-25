@@ -18,6 +18,8 @@ import {
   RotateCcw,
   PanelRightClose,
   PanelLeftClose,
+  PanelTop,
+  RectangleHorizontal,
   ChevronLeft,
   ChevronRight,
 } from "lucide-react";
@@ -105,20 +107,29 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
   const lyricsScrollRef = useRef<HTMLDivElement | null>(null);
   const lineRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
+  // Dock, Independent Notch/Pill Style, Hover Auto-Peek (ON by default so Lyrics opens as Pill/Notch first!)
   const [isPinned, setIsPinned] = useState(true);
   const [lyricsDockEdge, setLyricsDockEdge] = useState<"right" | "left" | "floating">(() => {
     const saved = localStorage.getItem("ms-island-lyrics-dock");
     return saved === "left" || saved === "floating" ? saved : "right";
   });
-  const [barStyle, setBarStyle] = useState<"notch" | "island">(() => {
-    const saved = localStorage.getItem("ms-island-bar-style");
-    return saved === "island" ? "island" : "notch";
+  const [lyricsBarStyle, setLyricsBarStyle] = useState<"notch" | "island">(() => {
+    const saved = localStorage.getItem("ms-island-lyrics-bar-style");
+    if (saved === "notch" || saved === "island") return saved;
+    const inherited = localStorage.getItem("ms-island-bar-style");
+    return inherited === "island" ? "island" : "notch";
   });
   const [autoPeek, setAutoPeek] = useState<boolean>(() => {
-    return localStorage.getItem("ms-island-lyrics-autopeek") === "true";
+    const saved = localStorage.getItem("ms-island-lyrics-autopeek");
+    return saved === null ? true : saved === "true";
   });
+  const [isSideStacked, setIsSideStacked] = useState(false);
   const [isPeekHovered, setIsPeekHovered] = useState(false);
   const [isInputFocused, setIsInputFocused] = useState(false);
+  const [winSize, setWinSize] = useState<{ w: number; h: number }>(() => ({
+    w: typeof window !== "undefined" ? window.innerWidth || 340 : 340,
+    h: typeof window !== "undefined" ? window.innerHeight || 468 : 468,
+  }));
   const peekOpenTimerRef = useRef<number | null>(null);
   const peekCloseTimerRef = useRef<number | null>(null);
 
@@ -142,13 +153,26 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
     !isSearching;
   const isAcrylic = backdropMode === "acrylic" && !isCollapsed;
 
-  // Sync dock edge & bar style with Rust and Dynamic Island
+  // Track inner window size for smooth exact-pixel island-shell-spring morph
+  useEffect(() => {
+    const onResize = () => {
+      setWinSize({
+        w: window.innerWidth || 340,
+        h: window.innerHeight || 468,
+      });
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  // Sync dock edge, independent Notch/Pill style, vertical stack state, and start collapsed on show
   useEffect(() => {
     const isTauri = !!(window as any).__TAURI_INTERNALS__;
     if (!isTauri) return;
     let active = true;
     let unlisteners: Array<() => void> = [];
 
+    invoke("set_lyrics_bar_style", { style: lyricsBarStyle }).catch(() => {});
     invoke("dock_lyrics_to_edge", { edge: lyricsDockEdge }).catch(() => {});
 
     Promise.all([
@@ -158,10 +182,21 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
           localStorage.setItem("ms-island-lyrics-dock", e.payload);
         }
       }),
-      listen<string>("bar-style-changed", (e) => {
+      listen<string>("lyrics-bar-style-changed", (e) => {
         if (e.payload === "notch" || e.payload === "island") {
-          setBarStyle(e.payload);
-          localStorage.setItem("ms-island-bar-style", e.payload);
+          setLyricsBarStyle(e.payload);
+          localStorage.setItem("ms-island-lyrics-bar-style", e.payload);
+        }
+      }),
+      listen<boolean>("side-stack-active", (e) => {
+        setIsSideStacked(Boolean(e.payload));
+      }),
+      listen<boolean>("lyrics-visibility-changed", (e) => {
+        if (e.payload) {
+          // Always open cleanly as Pill/Notch first when Auto-Peek is enabled
+          setIsPeekHovered(false);
+          setIsInputFocused(false);
+          setDropdownOpen(false);
         }
       }),
     ]).then((fns) => {
@@ -175,7 +210,7 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
     };
   }, []);
 
-  // Sync native Windows DWM Acrylic / Solid backdrop (temporarily clears Acrylic while collapsed into Peek tab so transparent space stays 100% invisible)
+  // Sync native Windows DWM Acrylic / Solid backdrop (temporarily clears Acrylic while collapsed into Peek tab)
   useEffect(() => {
     const isTauri = !!(window as any).__TAURI_INTERNALS__;
     if (!isTauri) return;
@@ -185,45 +220,37 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
     });
   }, [backdropMode, isCollapsed, isLight]);
 
-  // Sync exact click-through hit-rect to Rust whenever collapsed into edge Peek tab
+  // Sync exact click-through hit-rect to Rust whenever collapsed into edge Pill/Notch
   useEffect(() => {
     const isTauri = !!(window as any).__TAURI_INTERNALS__;
     if (!isTauri) return;
 
-    const updateHitRect = () => {
-      if (!isCollapsed) {
-        invoke("set_lyrics_hit_rect", {
-          x: 0,
-          y: 0,
-          width: window.innerWidth || 340,
-          height: window.innerHeight || 468,
-          pad: 0,
-          fullWindow: true,
-        }).catch(() => {});
-        return;
-      }
-
-      const winW = window.innerWidth || 340;
-      const winH = window.innerHeight || 468;
-      const peekW = 36;
-      const peekH = 112;
-      const x = lyricsDockEdge === "left" ? 0 : Math.max(0, winW - peekW);
-      const y = Math.max(0, (winH - peekH) / 2);
-
+    if (!isCollapsed) {
       invoke("set_lyrics_hit_rect", {
-        x,
-        y,
-        width: peekW,
-        height: peekH,
+        x: 0,
+        y: 0,
+        width: winSize.w,
+        height: winSize.h,
         pad: 0,
-        fullWindow: false,
+        fullWindow: true,
       }).catch(() => {});
-    };
+      return;
+    }
 
-    updateHitRect();
-    window.addEventListener("resize", updateHitRect);
-    return () => window.removeEventListener("resize", updateHitRect);
-  }, [isCollapsed, lyricsDockEdge]);
+    const peekW = 46;
+    const peekH = 112;
+    const x = lyricsDockEdge === "left" ? 0 : Math.max(0, winSize.w - peekW);
+    const y = isSideStacked ? 4 : Math.max(0, (winSize.h - peekH) / 2);
+
+    invoke("set_lyrics_hit_rect", {
+      x,
+      y,
+      width: peekW,
+      height: peekH,
+      pad: 0,
+      fullWindow: false,
+    }).catch(() => {});
+  }, [isCollapsed, lyricsDockEdge, isSideStacked, winSize]);
 
   useEffect(() => {
     return () => {
@@ -231,6 +258,16 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
       if (peekCloseTimerRef.current) clearTimeout(peekCloseTimerRef.current);
     };
   }, []);
+
+  const handleToggleLyricsBarStyle = () => {
+    const next = lyricsBarStyle === "notch" ? "island" : "notch";
+    setLyricsBarStyle(next);
+    localStorage.setItem("ms-island-lyrics-bar-style", next);
+    const isTauri = !!(window as any).__TAURI_INTERNALS__;
+    if (isTauri) {
+      invoke("set_lyrics_bar_style", { style: next }).catch(() => {});
+    }
+  };
 
   const handleToggleAutoPeek = () => {
     const next = !autoPeek;
@@ -249,6 +286,7 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
     }
   };
 
+  // Identical snappy hover feel to Dynamic Island (45ms open, 100ms close)
   const handlePeekEnter = () => {
     if (!autoPeek) return;
     if (peekCloseTimerRef.current) {
@@ -272,7 +310,7 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
     peekCloseTimerRef.current = window.setTimeout(() => {
       peekCloseTimerRef.current = null;
       setIsPeekHovered(false);
-    }, 200);
+    }, 100);
   };
 
   const handleSetBackdrop = (next: "solid" | "acrylic") => {
@@ -319,16 +357,16 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
     setLivePosSec(media.positionSec || 0);
   }, [media.positionSec, media.isPlaying, media.title]);
 
-  // Smooth interpolation tick ONLY while Synced view is active and audio is playing (0% CPU otherwise)
+  // Smooth interpolation tick ONLY while Synced view is active and expanded
   useEffect(() => {
-    if (!isSyncedActive || !media.isPlaying) return;
+    if (!isSyncedActive || !media.isPlaying || isCollapsed) return;
     const id = window.setInterval(() => {
       const elapsed = (performance.now() - syncAnchorRef.current.updatedAt) / 1000;
       const next = syncAnchorRef.current.basePos + elapsed;
       setLivePosSec(media.durationSec > 0 ? Math.min(media.durationSec, next) : next);
     }, 140);
     return () => clearInterval(id);
-  }, [isSyncedActive, media.isPlaying, media.durationSec]);
+  }, [isSyncedActive, media.isPlaying, media.durationSec, isCollapsed]);
 
   const activeLineIdx = useMemo(() => {
     if (!isSyncedActive || syncedLines.length === 0) return -1;
@@ -343,7 +381,7 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
 
   // Smooth auto-scroll active synced line into comfortable reading position (~36% from top)
   useEffect(() => {
-    if (!isSyncedActive || manualScrollPaused || activeLineIdx < 0) return;
+    if (!isSyncedActive || isCollapsed || manualScrollPaused || activeLineIdx < 0) return;
     const container = lyricsScrollRef.current;
     const lineEl = lineRefs.current[activeLineIdx];
     if (!container || !lineEl) return;
@@ -353,7 +391,7 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
       lineEl.offsetTop - container.clientHeight * 0.36 + lineEl.clientHeight / 2
     );
     container.scrollTo({ top: targetTop, behavior: "smooth" });
-  }, [activeLineIdx, isSyncedActive, manualScrollPaused]);
+  }, [activeLineIdx, isSyncedActive, isCollapsed, manualScrollPaused]);
 
   const pauseAutoScrollTemporarily = () => {
     if (!isSyncedActive) return;
@@ -585,21 +623,29 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
     ? "text-zinc-600 hover:text-zinc-950"
     : "text-zinc-400 hover:text-white";
 
-  const isNotchEdge = barStyle === "notch" && isSideDocked;
-  const shellRadiusCls = isAcrylic
-    ? "rounded-lg"
-    : isNotchEdge
+  const isNotchEdge = lyricsBarStyle === "notch" && isSideDocked;
+  const shellRadiusCls = isCollapsed
+    ? isNotchEdge
       ? lyricsDockEdge === "right"
-        ? "rounded-l-2xl rounded-r-none border-r-0"
-        : "rounded-r-2xl rounded-l-none border-l-0"
-      : "rounded-2xl";
+        ? "rounded-l-[18px] rounded-r-none border-r-0"
+        : "rounded-r-[18px] rounded-l-none border-l-0"
+      : "rounded-[23px]"
+    : isAcrylic
+      ? "rounded-lg"
+      : isNotchEdge
+        ? lyricsDockEdge === "right"
+          ? "rounded-l-[22px] rounded-r-none border-r-0"
+          : "rounded-r-[22px] rounded-l-none border-l-0"
+        : "rounded-[22px]";
+
   const topRadiusCls = isAcrylic
     ? "rounded-t-lg"
     : isNotchEdge
       ? lyricsDockEdge === "right"
-        ? "rounded-tl-2xl rounded-tr-none"
-        : "rounded-tr-2xl rounded-tl-none"
-      : "rounded-t-2xl";
+        ? "rounded-tl-[22px] rounded-tr-none"
+        : "rounded-tr-[22px] rounded-tl-none"
+      : "rounded-t-[22px]";
+
   const dividerCls = isAcrylic
     ? isLight
       ? "border-black/10"
@@ -608,544 +654,553 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
       ? "border-zinc-300"
       : "border-zinc-800";
 
-  // Collapsed Hover-Peek vertical edge tab (36x112px; transparent surroundings are 100% click-through)
-  if (isCollapsed) {
-    const peekShapeCls =
-      barStyle === "notch"
-        ? lyricsDockEdge === "right"
-          ? "rounded-l-[16px] rounded-r-none border-r-0"
-          : "rounded-r-[16px] rounded-l-none border-l-0"
-        : "rounded-[18px]";
+  const expandedH = isSideStacked ? Math.max(260, winSize.h - 4) : winSize.h;
+  const shellW = isCollapsed ? 46 : winSize.w;
+  const shellH = isCollapsed ? 112 : expandedH;
 
-    return (
-      <div
-        className={`w-full h-full flex items-center bg-transparent select-none ${
-          lyricsDockEdge === "left" ? "justify-start" : "justify-end"
-        }`}
-      >
-        <div
-          onMouseEnter={handlePeekEnter}
-          onMouseLeave={handlePeekLeave}
-          onClick={() => setIsPeekHovered(true)}
-          onMouseDown={(e) => {
-            if (e.button !== 0) return;
-            onStartDrag();
-          }}
-          title={
-            displayedTitle !== "Full Lyrics"
-              ? `Hover to peek lyrics · ${displayedTitle}`
-              : "Hover to peek lyrics"
-          }
-          className={`w-[36px] h-[112px] flex flex-col items-center justify-between py-2.5 border shadow-xl cursor-pointer transition-all duration-150 ${peekShapeCls} ${
-            isLight
-              ? "bg-[#f5f5f3]/95 border-zinc-300 text-zinc-900 shadow-black/20"
-              : "bg-[#0c0c0e]/95 border-zinc-800 text-zinc-100 shadow-black/75"
-          }`}
-        >
-          <span
-            className={`w-1.5 h-1.5 rounded-full ${
-              media.isPlaying ? "bg-accent" : isLight ? "bg-zinc-400" : "bg-zinc-600"
-            }`}
-          />
-
-          <div className="flex flex-col items-center gap-1">
-            <FileText className="w-3.5 h-3.5 text-accent" />
-            <span
-              className={`text-[7.5px] font-bold uppercase tracking-wider leading-none ${
-                isLight ? "text-zinc-600" : "text-zinc-400"
-              }`}
-            >
-              {hasSynced ? "SYNC" : "LYR"}
-            </span>
-          </div>
-
-          {lyricsDockEdge === "left" ? (
-            <ChevronRight className={`w-3 h-3 ${isLight ? "text-zinc-500" : "text-zinc-500"}`} />
-          ) : (
-            <ChevronLeft className={`w-3 h-3 ${isLight ? "text-zinc-500" : "text-zinc-500"}`} />
-          )}
-        </div>
-      </div>
-    );
-  }
+  const outerAlignCls = `${
+    lyricsDockEdge === "left" ? "justify-start" : "justify-end"
+  } ${isSideStacked ? "items-start pt-1" : "items-center"}`;
 
   return (
-    <div
-      onMouseEnter={handlePeekEnter}
-      onMouseLeave={handlePeekLeave}
-      className={`w-full h-full flex flex-col ${shellRadiusCls} overflow-hidden select-none border transition-[border-color,box-shadow] duration-150 ease-out ${
-        isAcrylic
-          ? isLight
-            ? "bg-transparent border-black/15 text-zinc-900"
-            : "bg-transparent border-white/15 text-zinc-100"
-          : isLight
-            ? "border-zinc-300 shadow-2xl text-zinc-900"
-            : "border-zinc-800 shadow-2xl text-zinc-100"
-      }`}
-    >
-      {/* TOP ZONE: Solid in Solid mode, unified transparent Acrylic in Acrylic mode */}
+    <div className={`w-full h-full flex bg-transparent select-none ${outerAlignCls}`}>
+      {/* Single Persistent Shell with Exact Same island-shell-spring Morph as Dynamic Island */}
       <div
-        className={`relative flex-shrink-0 border-b transition-[background-color,border-color] duration-150 ${topRadiusCls} ${dividerCls} ${
+        onMouseEnter={handlePeekEnter}
+        onMouseLeave={handlePeekLeave}
+        style={{ width: `${shellW}px`, height: `${shellH}px` }}
+        className={`relative island-shell-spring flex flex-col ${shellRadiusCls} overflow-hidden border ${
           isAcrylic
-            ? "bg-transparent"
+            ? isLight
+              ? "bg-transparent border-black/15 text-zinc-900"
+              : "bg-transparent border-white/15 text-zinc-100"
             : isLight
-              ? "bg-[#efefec]"
-              : "bg-[#121215]"
+              ? "bg-[#f5f5f3] border-zinc-300 shadow-2xl text-zinc-900"
+              : "bg-[#0c0c0e] border-zinc-800 shadow-2xl text-zinc-100"
         }`}
       >
-        {/* Draggable Compact Header */}
-        <div
-          className={`flex items-center justify-between px-3 py-2 border-b cursor-move transition-colors ${dividerCls}`}
-          onMouseDown={(e) => {
-            if (e.button !== 0) return;
-            if ((e.target as HTMLElement).closest("button")) return;
-            onStartDrag();
-          }}
-        >
-          <div className="flex items-center gap-2 min-w-0 pr-1.5">
-            {media.thumbnail && !customMeta ? (
-              <img
-                src={media.thumbnail}
-                alt="Track cover"
-                className="w-6 h-6 rounded-md object-cover flex-shrink-0 border border-zinc-700/40"
-              />
-            ) : (
-              <FileText
-                className={`w-3.5 h-3.5 flex-shrink-0 ${isLight ? "text-zinc-600" : "text-zinc-400"}`}
-              />
-            )}
-            <div className="min-w-0">
-              <h3 className="text-[11px] font-semibold truncate leading-tight" title={displayedTitle}>
-                {displayedTitle}
-              </h3>
-              <p
-                className={`text-[10px] truncate leading-tight mt-0.5 ${isLight ? "text-zinc-600" : "text-zinc-400"}`}
-                title={displayedArtist}
-              >
-                {displayedArtist}
-              </p>
-            </div>
-          </div>
-
-          {/* Compact Action Icons */}
-          <div className="flex items-center gap-0.5 flex-shrink-0">
-            {customMeta && (
-              <button
-                onClick={handleResetToPlaying}
-                className={`p-1.5 rounded-md transition-all focus:outline-none focus-visible:ring-1 focus-visible:ring-accent active:scale-[0.95] text-accent ${
-                  isLight ? "hover:bg-black/10" : "hover:bg-white/10"
-                }`}
-                title="Back to currently playing track"
-              >
-                <RotateCcw className="w-3.5 h-3.5" />
-              </button>
-            )}
-
-            <button
-              onClick={handleCopyTrackInfo}
-              className={`p-1.5 rounded-md transition-all focus:outline-none focus-visible:ring-1 focus-visible:ring-accent active:scale-[0.95] ${iconBtnCls}`}
-              title="Copy Title & Artist"
-            >
-              {copiedTrack ? (
-                <Check className="w-3.5 h-3.5 text-emerald-500" />
-              ) : (
-                <Music className="w-3.5 h-3.5" />
-              )}
-            </button>
-
-            <button
-              onClick={handleCopyLyrics}
-              className={`p-1.5 rounded-md transition-all focus:outline-none focus-visible:ring-1 focus-visible:ring-accent active:scale-[0.95] ${iconBtnCls}`}
-              title="Copy Full Lyrics"
-            >
-              {copiedLyrics ? (
-                <Check className="w-3.5 h-3.5 text-emerald-500" />
-              ) : (
-                <Copy className="w-3.5 h-3.5" />
-              )}
-            </button>
-
-            <button
-              onClick={handleToggleAutoPeek}
-              className={`p-1.5 rounded-md transition-all focus:outline-none focus-visible:ring-1 focus-visible:ring-accent active:scale-[0.95] ${
-                autoPeek ? "text-accent hover:bg-white/10" : iconBtnCls
-              }`}
-              title={
-                autoPeek
-                  ? "Hover Auto-Peek ON (collapses to edge tab when idle)"
-                  : "Enable Hover Auto-Peek on screen edge"
-              }
-            >
-              {lyricsDockEdge === "left" ? (
-                <PanelLeftClose className="w-3.5 h-3.5" />
-              ) : (
-                <PanelRightClose className="w-3.5 h-3.5" />
-              )}
-            </button>
-
-            <button
-              onClick={handleTogglePin}
-              className={`p-1.5 rounded-md transition-all focus:outline-none focus-visible:ring-1 focus-visible:ring-accent active:scale-[0.95] ${
-                isPinned ? "text-accent hover:bg-white/10" : iconBtnCls
-              }`}
-              title={isPinned ? "Always on top (Click to unpin)" : "Pin always on top"}
-            >
-              {isPinned ? <Pin className="w-3.5 h-3.5" /> : <PinOff className="w-3.5 h-3.5" />}
-            </button>
-
-            <button
-              onClick={onToggleTheme}
-              className={`p-1.5 rounded-md transition-all focus:outline-none focus-visible:ring-1 focus-visible:ring-accent active:scale-[0.95] ${iconBtnCls}`}
-              title={isLight ? "Switch to Dark Mode" : "Switch to Light Mode"}
-            >
-              {isLight ? <Moon className="w-3.5 h-3.5" /> : <Sun className="w-3.5 h-3.5" />}
-            </button>
-
-            <button
-              onClick={onClose}
-              className={`p-1.5 rounded-md transition-all focus:outline-none focus-visible:ring-1 focus-visible:ring-accent active:scale-[0.95] ${
-                isLight
-                  ? "text-zinc-600 hover:text-red-600 hover:bg-black/10"
-                  : "text-zinc-400 hover:text-red-400 hover:bg-white/10"
-              }`}
-              title="Close Lyrics Window (Esc)"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        </div>
-
-        {/* Manual Search Bar + Smart Live Autocomplete Dropdown */}
-        <div ref={searchWrapRef} className="relative">
-          <form
-            onSubmit={handleManualSearch}
-            className={`flex items-center gap-1.5 px-3 py-2 transition-colors ${
-              isAcrylic
-                ? "bg-transparent"
-                : isLight
-                  ? "bg-[#f3f3f0]"
-                  : "bg-[#101013]"
-            }`}
+        {isCollapsed ? (
+          /* Collapsed Twin Pill/Notch Content (46x112px — identical width & rhythm to Side Island!) */
+          <div
+            onClick={() => setIsPeekHovered(true)}
+            onMouseDown={(e) => {
+              if (e.button !== 0) return;
+              onStartDrag();
+            }}
+            title={
+              displayedTitle !== "Full Lyrics"
+                ? `Hover for lyrics · ${displayedTitle}`
+                : "Hover for lyrics"
+            }
+            className="w-full h-full flex flex-col items-center justify-between py-2.5 px-1 cursor-pointer island-panel-fade"
           >
-            <div className="relative flex-1">
-              <input
-                type="text"
-                value={searchQuery}
-                onFocus={() => {
-                  setIsInputFocused(true);
-                  if (searchQuery.trim().length >= 2) setDropdownOpen(true);
-                }}
-                onBlur={() => setIsInputFocused(false)}
-                onChange={(e) => {
-                  setSearchQuery(e.target.value);
-                  setDropdownOpen(e.target.value.trim().length >= 2);
-                }}
-                onKeyDown={handleInputKeyDown}
-                placeholder="Search song or artist..."
-                className={`w-full text-[11px] rounded-lg px-2.5 py-1.5 pl-7 pr-6 focus:outline-none focus-visible:ring-1 focus-visible:ring-accent transition-colors border ${
-                  isAcrylic
-                    ? isLight
-                      ? "bg-black/[0.06] border-black/15 text-zinc-900 placeholder-zinc-600"
-                      : "bg-white/[0.08] border-white/15 text-zinc-100 placeholder-zinc-400"
-                    : isLight
-                      ? "bg-white border-zinc-300 text-zinc-900 placeholder-zinc-500"
-                      : "bg-zinc-900 border-zinc-800 text-zinc-100 placeholder-zinc-500"
-                }`}
-              />
-              <Search
-                className={`w-3 h-3 absolute left-2.5 top-[9px] ${
-                  isAcrylic ? (isLight ? "text-zinc-600" : "text-zinc-400") : "text-zinc-500"
-                }`}
-              />
-              {isSuggesting && (
-                <Loader2 className="w-3 h-3 animate-spin text-accent absolute right-2 top-[9px]" />
-              )}
-            </div>
-            <button
-              type="submit"
-              disabled={isSearching || !searchQuery.trim()}
-              className={`px-2.5 py-1.5 text-[11px] font-medium rounded-lg transition-all flex items-center gap-1 border disabled:opacity-45 active:scale-[0.97] ${
-                isLight
-                  ? "bg-zinc-900 hover:bg-zinc-800 text-white border-zinc-900"
-                  : "bg-zinc-100 hover:bg-white text-zinc-950 border-zinc-100"
+            <span
+              className={`w-1.5 h-1.5 rounded-full ${
+                media.isPlaying ? "bg-accent" : isLight ? "bg-zinc-400" : "bg-zinc-600"
               }`}
-            >
-              {isSearching ? <Loader2 className="w-3 h-3 animate-spin" /> : "Search"}
-            </button>
-          </form>
+            />
 
-          {/* Smart Live Suggestions Dropdown */}
-          {dropdownOpen && searchQuery.trim().length >= 2 && (suggestions.length > 0 || isSuggesting) && (
+            <div className="flex flex-col items-center gap-1">
+              <FileText className="w-4 h-4 text-accent" />
+              <span
+                className={`text-[8px] font-bold uppercase tracking-wider leading-none ${
+                  isLight ? "text-zinc-600" : "text-zinc-400"
+                }`}
+              >
+                {hasSynced ? "SYNC" : "LYR"}
+              </span>
+            </div>
+
+            {lyricsDockEdge === "left" ? (
+              <ChevronRight className="w-3 h-3 text-zinc-500" />
+            ) : (
+              <ChevronLeft className="w-3 h-3 text-zinc-500" />
+            )}
+          </div>
+        ) : (
+          /* Expanded Full Lyrics Content */
+          <div className="w-full h-full flex flex-col min-w-0 min-h-0 island-panel-fade">
+            {/* TOP ZONE */}
             <div
-              className={`absolute left-2.5 right-2.5 top-[calc(100%-2px)] z-40 rounded-xl border shadow-2xl overflow-hidden max-h-[235px] overflow-y-auto ${
-                isLight
-                  ? "bg-[#f8f8f7] border-zinc-300 text-zinc-900 shadow-black/20"
-                  : "bg-[#141419] border-zinc-800 text-zinc-100 shadow-black/80"
+              className={`relative flex-shrink-0 border-b transition-[background-color,border-color] duration-150 ${topRadiusCls} ${dividerCls} ${
+                isAcrylic
+                  ? "bg-transparent"
+                  : isLight
+                    ? "bg-[#efefec]"
+                    : "bg-[#121215]"
               }`}
             >
-              {suggestions.length === 0 && isSuggesting ? (
-                <div
-                  className={`px-3 py-2.5 text-[11px] flex items-center gap-2 ${isLight ? "text-zinc-600" : "text-zinc-400"}`}
-                >
-                  <Loader2 className="w-3 h-3 animate-spin text-accent" />
-                  <span>Finding matching songs...</span>
+              {/* Draggable Compact Header */}
+              <div
+                className={`flex items-center justify-between px-3 py-2 border-b cursor-move transition-colors ${dividerCls}`}
+                onMouseDown={(e) => {
+                  if (e.button !== 0) return;
+                  if ((e.target as HTMLElement).closest("button")) return;
+                  onStartDrag();
+                }}
+              >
+                <div className="flex items-center gap-2 min-w-0 pr-1">
+                  {media.thumbnail && !customMeta ? (
+                    <img
+                      src={media.thumbnail}
+                      alt="Track cover"
+                      className="w-6 h-6 rounded-md object-cover flex-shrink-0 border border-zinc-700/40"
+                    />
+                  ) : (
+                    <FileText
+                      className={`w-3.5 h-3.5 flex-shrink-0 ${isLight ? "text-zinc-600" : "text-zinc-400"}`}
+                    />
+                  )}
+                  <div className="min-w-0">
+                    <h3 className="text-[11px] font-semibold truncate leading-tight" title={displayedTitle}>
+                      {displayedTitle}
+                    </h3>
+                    <p
+                      className={`text-[10px] truncate leading-tight mt-0.5 ${isLight ? "text-zinc-600" : "text-zinc-400"}`}
+                      title={displayedArtist}
+                    >
+                      {displayedArtist}
+                    </p>
+                  </div>
                 </div>
-              ) : (
-                <div className="p-1 space-y-0.5">
-                  {suggestions.map((item, idx) => {
-                    const isHighlighted = idx === activeIndex;
-                    return (
-                      <button
-                        key={`${item.id}-${idx}`}
-                        type="button"
-                        onMouseEnter={() => setActiveIndex(idx)}
-                        onMouseDown={(e) => {
-                          e.preventDefault();
-                          handleSelectSuggestion(item);
-                        }}
-                        className={`w-full text-left px-2.5 py-1.5 rounded-lg grid grid-cols-[1fr_auto] items-center gap-2 transition-colors ${
-                          isHighlighted
-                            ? isLight
-                              ? "bg-zinc-200/90 text-zinc-950"
-                              : "bg-zinc-800 text-white"
-                            : isLight
-                              ? "hover:bg-zinc-200/70"
-                              : "hover:bg-zinc-800/70"
-                        }`}
-                      >
-                        <div className="min-w-0">
-                          <div className="text-[11px] font-medium truncate leading-tight">
-                            {item.trackName}
-                          </div>
-                          <div
-                            className={`text-[10px] truncate leading-tight mt-0.5 ${isLight ? "text-zinc-600" : "text-zinc-400"}`}
-                          >
-                            {item.artistName}
-                            {item.albumName ? ` · ${item.albumName}` : ""}
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-1.5 flex-shrink-0">
-                          {item.syncedLyrics && (
-                            <span
-                              className={`text-[8px] font-semibold uppercase tracking-wider px-1 py-0.5 rounded ${
-                                isLight
-                                  ? "bg-accent/15 text-accent"
-                                  : "bg-accent/15 text-accent"
-                              }`}
-                            >
-                              Sync
-                            </span>
-                          )}
-                          {item.durationSec > 0 && (
-                            <span
-                              className={`text-[10px] font-mono tabular-nums ${
-                                isHighlighted
-                                  ? "text-accent font-semibold"
-                                  : "text-zinc-500"
-                              }`}
-                            >
-                              {formatTime(item.durationSec)}
-                            </span>
-                          )}
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
 
-      {/* LYRICS BODY: Synced interactive lines OR Static plain lyrics */}
-      <div className="relative flex-1 min-h-0 flex flex-col">
-        <div
-          ref={lyricsScrollRef}
-          onWheel={pauseAutoScrollTemporarily}
-          onTouchStart={pauseAutoScrollTemporarily}
-          className={`flex-1 px-4 py-4 overflow-y-auto transition-[background-color] duration-150 ease-out ${
-            isSyncedActive ? "select-none" : "select-text"
-          } ${
-            isAcrylic
-              ? "bg-transparent"
-              : isLight
-                ? "bg-[#f8f8f7]"
-                : "bg-[#0c0c0e]"
-          }`}
-        >
-          {activePayload.status === "loading" ? (
-            <div className="w-full h-full flex flex-col items-center justify-center text-center py-8 px-3 gap-2">
-              <Loader2 className="w-4 h-4 animate-spin text-accent" />
-              <p className={`text-[11px] font-medium ${isLight ? "text-zinc-600" : "text-zinc-400"}`}>
-                Searching for lyrics...
-              </p>
-            </div>
-          ) : isSyncedActive ? (
-            <div className="space-y-1.5 pb-16 pt-2">
-              {syncedLines.map((line, idx) => {
-                const isActive = idx === activeLineIdx;
-                const isPast = activeLineIdx >= 0 && idx < activeLineIdx;
-                return (
+                {/* Compact Action Icons */}
+                <div className="flex items-center gap-0.5 flex-shrink-0">
+                  {customMeta && (
+                    <button
+                      onClick={handleResetToPlaying}
+                      className={`p-1 rounded-md transition-all focus:outline-none focus-visible:ring-1 focus-visible:ring-accent active:scale-[0.95] text-accent ${
+                        isLight ? "hover:bg-black/10" : "hover:bg-white/10"
+                      }`}
+                      title="Back to currently playing track"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+
                   <button
-                    key={`${line.timeSec}-${idx}`}
-                    ref={(el) => {
-                      lineRefs.current[idx] = el;
-                    }}
-                    type="button"
-                    onClick={() => handleSeekLine(line.timeSec)}
-                    title={`Jump to ${formatTime(Math.floor(line.timeSec))}`}
-                    className={`w-full text-left border-l-2 pl-2.5 py-1 rounded-r-md transition-colors duration-150 leading-[1.6] tracking-[0.01em] focus:outline-none focus-visible:ring-1 focus-visible:ring-accent ${
-                      isActive
-                        ? isLight
-                          ? "border-accent text-zinc-950 font-semibold bg-black/[0.04]"
-                          : "border-accent text-white font-semibold bg-white/[0.06]"
-                        : isPast
+                    onClick={handleCopyTrackInfo}
+                    className={`p-1 rounded-md transition-all focus:outline-none focus-visible:ring-1 focus-visible:ring-accent active:scale-[0.95] ${iconBtnCls}`}
+                    title="Copy Title & Artist"
+                  >
+                    {copiedTrack ? (
+                      <Check className="w-3.5 h-3.5 text-emerald-500" />
+                    ) : (
+                      <Music className="w-3.5 h-3.5" />
+                    )}
+                  </button>
+
+                  <button
+                    onClick={handleCopyLyrics}
+                    className={`p-1 rounded-md transition-all focus:outline-none focus-visible:ring-1 focus-visible:ring-accent active:scale-[0.95] ${iconBtnCls}`}
+                    title="Copy Full Lyrics"
+                  >
+                    {copiedLyrics ? (
+                      <Check className="w-3.5 h-3.5 text-emerald-500" />
+                    ) : (
+                      <Copy className="w-3.5 h-3.5" />
+                    )}
+                  </button>
+
+                  <button
+                    onClick={handleToggleLyricsBarStyle}
+                    className={`p-1 rounded-md transition-all focus:outline-none focus-visible:ring-1 focus-visible:ring-accent active:scale-[0.95] ${
+                      lyricsBarStyle === "island" ? "text-accent hover:bg-white/10" : iconBtnCls
+                    }`}
+                    title={
+                      lyricsBarStyle === "notch"
+                        ? "Lyrics Style: Edge Notch (Click for Floating Pill)"
+                        : "Lyrics Style: Floating Pill (Click for Edge Notch)"
+                    }
+                  >
+                    {lyricsBarStyle === "notch" ? (
+                      <RectangleHorizontal className="w-3.5 h-3.5" />
+                    ) : (
+                      <PanelTop className="w-3.5 h-3.5" />
+                    )}
+                  </button>
+
+                  <button
+                    onClick={handleToggleAutoPeek}
+                    className={`p-1 rounded-md transition-all focus:outline-none focus-visible:ring-1 focus-visible:ring-accent active:scale-[0.95] ${
+                      autoPeek ? "text-accent hover:bg-white/10" : iconBtnCls
+                    }`}
+                    title={
+                      autoPeek
+                        ? "Hover Auto-Peek ON (Click to keep always expanded)"
+                        : "Enable Hover Auto-Peek (collapse to edge pill)"
+                    }
+                  >
+                    {lyricsDockEdge === "left" ? (
+                      <PanelLeftClose className="w-3.5 h-3.5" />
+                    ) : (
+                      <PanelRightClose className="w-3.5 h-3.5" />
+                    )}
+                  </button>
+
+                  <button
+                    onClick={handleTogglePin}
+                    className={`p-1 rounded-md transition-all focus:outline-none focus-visible:ring-1 focus-visible:ring-accent active:scale-[0.95] ${
+                      isPinned ? "text-accent hover:bg-white/10" : iconBtnCls
+                    }`}
+                    title={isPinned ? "Always on top (Click to unpin)" : "Pin always on top"}
+                  >
+                    {isPinned ? <Pin className="w-3.5 h-3.5" /> : <PinOff className="w-3.5 h-3.5" />}
+                  </button>
+
+                  <button
+                    onClick={onToggleTheme}
+                    className={`p-1 rounded-md transition-all focus:outline-none focus-visible:ring-1 focus-visible:ring-accent active:scale-[0.95] ${iconBtnCls}`}
+                    title={isLight ? "Switch to Dark Mode" : "Switch to Light Mode"}
+                  >
+                    {isLight ? <Moon className="w-3.5 h-3.5" /> : <Sun className="w-3.5 h-3.5" />}
+                  </button>
+
+                  <button
+                    onClick={onClose}
+                    className={`p-1 rounded-md transition-all focus:outline-none focus-visible:ring-1 focus-visible:ring-accent active:scale-[0.95] ${
+                      isLight
+                        ? "text-zinc-600 hover:text-red-600 hover:bg-black/10"
+                        : "text-zinc-400 hover:text-red-400 hover:bg-white/10"
+                    }`}
+                    title="Close Lyrics Window (Esc)"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Manual Search Bar + Smart Live Autocomplete Dropdown */}
+              <div ref={searchWrapRef} className="relative">
+                <form
+                  onSubmit={handleManualSearch}
+                  className={`flex items-center gap-1.5 px-3 py-2 transition-colors ${
+                    isAcrylic
+                      ? "bg-transparent"
+                      : isLight
+                        ? "bg-[#f3f3f0]"
+                        : "bg-[#101013]"
+                  }`}
+                >
+                  <div className="relative flex-1">
+                    <input
+                      type="text"
+                      value={searchQuery}
+                      onFocus={() => {
+                        setIsInputFocused(true);
+                        if (searchQuery.trim().length >= 2) setDropdownOpen(true);
+                      }}
+                      onBlur={() => setIsInputFocused(false)}
+                      onChange={(e) => {
+                        setSearchQuery(e.target.value);
+                        setDropdownOpen(e.target.value.trim().length >= 2);
+                      }}
+                      onKeyDown={handleInputKeyDown}
+                      placeholder="Search song or artist..."
+                      className={`w-full text-[11px] rounded-lg px-2.5 py-1.5 pl-7 pr-6 focus:outline-none focus-visible:ring-1 focus-visible:ring-accent transition-colors border ${
+                        isAcrylic
                           ? isLight
-                            ? "border-transparent text-zinc-500/80 hover:text-zinc-900 hover:bg-black/[0.03]"
-                            : "border-transparent text-zinc-500 hover:text-zinc-200 hover:bg-white/[0.04]"
+                            ? "bg-black/[0.06] border-black/15 text-zinc-900 placeholder-zinc-600"
+                            : "bg-white/[0.08] border-white/15 text-zinc-100 placeholder-zinc-400"
                           : isLight
-                            ? "border-transparent text-zinc-700/85 hover:text-zinc-950 hover:bg-black/[0.03]"
-                            : "border-transparent text-zinc-300/85 hover:text-white hover:bg-white/[0.04]"
+                            ? "bg-white border-zinc-300 text-zinc-900 placeholder-zinc-500"
+                            : "bg-zinc-900 border-zinc-800 text-zinc-100 placeholder-zinc-500"
+                      }`}
+                    />
+                    <Search
+                      className={`w-3 h-3 absolute left-2.5 top-[9px] ${
+                        isAcrylic ? (isLight ? "text-zinc-600" : "text-zinc-400") : "text-zinc-500"
+                      }`}
+                    />
+                    {isSuggesting && (
+                      <Loader2 className="w-3 h-3 animate-spin text-accent absolute right-2 top-[9px]" />
+                    )}
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={isSearching || !searchQuery.trim()}
+                    className={`px-2.5 py-1.5 text-[11px] font-medium rounded-lg transition-all flex items-center gap-1 border disabled:opacity-45 active:scale-[0.97] ${
+                      isLight
+                        ? "bg-zinc-900 hover:bg-zinc-800 text-white border-zinc-900"
+                        : "bg-zinc-100 hover:bg-white text-zinc-950 border-zinc-100"
+                    }`}
+                  >
+                    {isSearching ? <Loader2 className="w-3 h-3 animate-spin" /> : "Search"}
+                  </button>
+                </form>
+
+                {/* Smart Live Suggestions Dropdown */}
+                {dropdownOpen &&
+                  searchQuery.trim().length >= 2 &&
+                  (suggestions.length > 0 || isSuggesting) && (
+                    <div
+                      className={`absolute left-2.5 right-2.5 top-[calc(100%-2px)] z-40 rounded-xl border shadow-2xl overflow-hidden max-h-[235px] overflow-y-auto ${
+                        isLight
+                          ? "bg-[#f8f8f7] border-zinc-300 text-zinc-900 shadow-black/20"
+                          : "bg-[#141419] border-zinc-800 text-zinc-100 shadow-black/80"
+                      }`}
+                    >
+                      {suggestions.length === 0 && isSuggesting ? (
+                        <div
+                          className={`px-3 py-2.5 text-[11px] flex items-center gap-2 ${isLight ? "text-zinc-600" : "text-zinc-400"}`}
+                        >
+                          <Loader2 className="w-3 h-3 animate-spin text-accent" />
+                          <span>Finding matching songs...</span>
+                        </div>
+                      ) : (
+                        <div className="p-1 space-y-0.5">
+                          {suggestions.map((item, idx) => {
+                            const isHighlighted = idx === activeIndex;
+                            return (
+                              <button
+                                key={`${item.id}-${idx}`}
+                                type="button"
+                                onMouseEnter={() => setActiveIndex(idx)}
+                                onMouseDown={(e) => {
+                                  e.preventDefault();
+                                  handleSelectSuggestion(item);
+                                }}
+                                className={`w-full text-left px-2.5 py-1.5 rounded-lg grid grid-cols-[1fr_auto] items-center gap-2 transition-colors ${
+                                  isHighlighted
+                                    ? isLight
+                                      ? "bg-zinc-200/90 text-zinc-950"
+                                      : "bg-zinc-800 text-white"
+                                    : isLight
+                                      ? "hover:bg-zinc-200/70"
+                                      : "hover:bg-zinc-800/70"
+                                }`}
+                              >
+                                <div className="min-w-0">
+                                  <div className="text-[11px] font-medium truncate leading-tight">
+                                    {item.trackName}
+                                  </div>
+                                  <div
+                                    className={`text-[10px] truncate leading-tight mt-0.5 ${isLight ? "text-zinc-600" : "text-zinc-400"}`}
+                                  >
+                                    {item.artistName}
+                                    {item.albumName ? ` · ${item.albumName}` : ""}
+                                  </div>
+                                </div>
+                                <div className="flex items-center gap-1.5 flex-shrink-0">
+                                  {item.syncedLyrics && (
+                                    <span className="text-[8px] font-semibold uppercase tracking-wider px-1 py-0.5 rounded bg-accent/15 text-accent">
+                                      Sync
+                                    </span>
+                                  )}
+                                  {item.durationSec > 0 && (
+                                    <span
+                                      className={`text-[10px] font-mono tabular-nums ${
+                                        isHighlighted
+                                          ? "text-accent font-semibold"
+                                          : "text-zinc-500"
+                                      }`}
+                                    >
+                                      {formatTime(item.durationSec)}
+                                    </span>
+                                  )}
+                                </div>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )}
+              </div>
+            </div>
+
+            {/* LYRICS BODY */}
+            <div className="relative flex-1 min-h-0 flex flex-col">
+              <div
+                ref={lyricsScrollRef}
+                onWheel={pauseAutoScrollTemporarily}
+                onTouchStart={pauseAutoScrollTemporarily}
+                className={`flex-1 px-4 py-4 overflow-y-auto transition-[background-color] duration-150 ease-out ${
+                  isSyncedActive ? "select-none" : "select-text"
+                } ${
+                  isAcrylic
+                    ? "bg-transparent"
+                    : isLight
+                      ? "bg-[#f8f8f7]"
+                      : "bg-[#0c0c0e]"
+                }`}
+              >
+                {activePayload.status === "loading" ? (
+                  <div className="w-full h-full flex flex-col items-center justify-center text-center py-8 px-3 gap-2">
+                    <Loader2 className="w-4 h-4 animate-spin text-accent" />
+                    <p
+                      className={`text-[11px] font-medium ${isLight ? "text-zinc-600" : "text-zinc-400"}`}
+                    >
+                      Searching for lyrics...
+                    </p>
+                  </div>
+                ) : isSyncedActive ? (
+                  <div className="space-y-1.5 pb-16 pt-2">
+                    {syncedLines.map((line, idx) => {
+                      const isActive = idx === activeLineIdx;
+                      const isPast = activeLineIdx >= 0 && idx < activeLineIdx;
+                      return (
+                        <button
+                          key={`${line.timeSec}-${idx}`}
+                          ref={(el) => {
+                            lineRefs.current[idx] = el;
+                          }}
+                          type="button"
+                          onClick={() => handleSeekLine(line.timeSec)}
+                          title={`Jump to ${formatTime(Math.floor(line.timeSec))}`}
+                          className={`w-full text-left border-l-2 pl-2.5 py-1 rounded-r-md transition-colors duration-150 leading-[1.6] tracking-[0.01em] focus:outline-none focus-visible:ring-1 focus-visible:ring-accent ${
+                            isActive
+                              ? isLight
+                                ? "border-accent text-zinc-950 font-semibold bg-black/[0.04]"
+                                : "border-accent text-white font-semibold bg-white/[0.06]"
+                              : isPast
+                                ? isLight
+                                  ? "border-transparent text-zinc-500/80 hover:text-zinc-900 hover:bg-black/[0.03]"
+                                  : "border-transparent text-zinc-500 hover:text-zinc-200 hover:bg-white/[0.04]"
+                                : isLight
+                                  ? "border-transparent text-zinc-700/85 hover:text-zinc-950 hover:bg-black/[0.03]"
+                                  : "border-transparent text-zinc-300/85 hover:text-white hover:bg-white/[0.04]"
+                          }`}
+                          style={{ fontSize: `${fontSize}px` }}
+                        >
+                          {line.text}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : displayedLyrics ? (
+                  <div
+                    className={`leading-[1.75] whitespace-pre-line tracking-[0.01em] transition-[color] duration-150 ${
+                      isLight ? "text-zinc-900" : "text-zinc-100"
                     }`}
                     style={{ fontSize: `${fontSize}px` }}
                   >
-                    {line.text}
-                  </button>
-                );
-              })}
+                    {displayedLyrics}
+                  </div>
+                ) : (
+                  <div className="w-full h-full flex flex-col items-center justify-center text-center py-8 px-3">
+                    <p
+                      className={`text-xs font-medium ${isLight ? "text-zinc-800" : "text-zinc-200"}`}
+                    >
+                      Waiting for audio playback
+                    </p>
+                    <p className={`mt-1 text-[11px] ${isLight ? "text-zinc-600" : "text-zinc-400"}`}>
+                      Play a track in YouTube or Spotify, or search above.
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              {/* Snap-back pill when user scrolls manually during Synced mode */}
+              {isSyncedActive && manualScrollPaused && (
+                <button
+                  type="button"
+                  onClick={() => setManualScrollPaused(false)}
+                  className={`absolute bottom-2.5 right-3 z-20 px-2.5 py-1 rounded-full text-[10px] font-semibold flex items-center gap-1.5 border shadow-lg transition-all active:scale-[0.96] ${
+                    isLight
+                      ? "bg-white/95 border-zinc-300 text-zinc-900 hover:bg-zinc-100"
+                      : "bg-[#16161b]/95 border-zinc-700 text-zinc-100 hover:bg-zinc-800"
+                  }`}
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-accent" />
+                  <span>Resume Sync</span>
+                </button>
+              )}
             </div>
-          ) : displayedLyrics ? (
+
+            {/* Footer: Backdrop (Solid / Acrylic) + Mode (Synced / Static) + Font Size */}
             <div
-              className={`leading-[1.75] whitespace-pre-line tracking-[0.01em] transition-[color] duration-150 ${
-                isLight ? "text-zinc-900" : "text-zinc-100"
+              onMouseDown={(e) => {
+                if (e.button !== 0) return;
+                if ((e.target as HTMLElement).closest("button")) return;
+                onStartDrag();
+              }}
+              className={`px-2.5 py-1.5 border-t flex items-center justify-between gap-1.5 text-[11px] cursor-move transition-[background-color] duration-150 ${dividerCls} ${
+                isAcrylic
+                  ? isLight
+                    ? "bg-transparent text-zinc-700"
+                    : "bg-transparent text-zinc-300"
+                  : isLight
+                    ? "bg-[#efefec] text-zinc-600"
+                    : "bg-[#121215] text-zinc-400"
               }`}
-              style={{ fontSize: `${fontSize}px` }}
             >
-              {displayedLyrics}
-            </div>
-          ) : (
-            <div className="w-full h-full flex flex-col items-center justify-center text-center py-8 px-3">
-              <p className={`text-xs font-medium ${isLight ? "text-zinc-800" : "text-zinc-200"}`}>
-                Waiting for audio playback
-              </p>
-              <p className={`mt-1 text-[11px] ${isLight ? "text-zinc-600" : "text-zinc-400"}`}>
-                Play a track in YouTube or Spotify, or search above.
-              </p>
-            </div>
-          )}
-        </div>
+              <div className="flex items-center gap-1.5">
+                <div
+                  className={`grid grid-cols-2 p-0.5 rounded-lg border text-[10px] font-medium ${pillGroupCls}`}
+                  title="Lyrics background style"
+                >
+                  {(["solid", "acrylic"] as const).map((mode) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => handleSetBackdrop(mode)}
+                      className={`px-2 py-0.5 rounded-md capitalize transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-accent ${
+                        backdropMode === mode ? pillActiveCls : pillIdleCls
+                      }`}
+                    >
+                      {mode}
+                    </button>
+                  ))}
+                </div>
 
-        {/* Snap-back pill when user scrolls manually during Synced mode */}
-        {isSyncedActive && manualScrollPaused && (
-          <button
-            type="button"
-            onClick={() => setManualScrollPaused(false)}
-            className={`absolute bottom-2.5 right-3 z-20 px-2.5 py-1 rounded-full text-[10px] font-semibold flex items-center gap-1.5 border shadow-lg transition-all active:scale-[0.96] ${
-              isLight
-                ? "bg-white/95 border-zinc-300 text-zinc-900 hover:bg-zinc-100"
-                : "bg-[#16161b]/95 border-zinc-700 text-zinc-100 hover:bg-zinc-800"
-            }`}
-          >
-            <span className="w-1.5 h-1.5 rounded-full bg-accent" />
-            <span>Resume Sync</span>
-          </button>
+                <div
+                  className={`grid grid-cols-2 p-0.5 rounded-lg border text-[10px] font-medium ${pillGroupCls}`}
+                  title={
+                    hasSynced
+                      ? "Switch between Synced (auto-scroll + click-to-seek) and Static lyrics"
+                      : "No synced timestamps available for this track (showing Static)"
+                  }
+                >
+                  <button
+                    type="button"
+                    onClick={() => handleSetLyricsMode("synced")}
+                    className={`px-2 py-0.5 rounded-md transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-accent ${
+                      isSyncedActive
+                        ? pillActiveCls
+                        : !hasSynced
+                          ? "opacity-40 cursor-not-allowed " + pillIdleCls
+                          : pillIdleCls
+                    }`}
+                  >
+                    Synced
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleSetLyricsMode("static")}
+                    className={`px-2 py-0.5 rounded-md transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-accent ${
+                      !isSyncedActive ? pillActiveCls : pillIdleCls
+                    }`}
+                  >
+                    Static
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-1 flex-shrink-0" title="Lyrics font size">
+                <button
+                  type="button"
+                  onClick={() => adjustFontSize(-1)}
+                  disabled={fontSize <= 12}
+                  className={`p-1 rounded border disabled:opacity-35 transition-colors ${btnCls}`}
+                  title="Decrease font size"
+                >
+                  <Minus className="w-2.5 h-2.5" />
+                </button>
+                <span className="text-[10px] font-mono tabular-nums w-4 text-center">{fontSize}</span>
+                <button
+                  type="button"
+                  onClick={() => adjustFontSize(1)}
+                  disabled={fontSize >= 20}
+                  className={`p-1 rounded border disabled:opacity-35 transition-colors ${btnCls}`}
+                  title="Increase font size"
+                >
+                  <Plus className="w-2.5 h-2.5" />
+                </button>
+              </div>
+            </div>
+          </div>
         )}
-      </div>
-
-      {/* Footer: Backdrop (Solid / Acrylic) + Mode (Synced / Static) + Font Size */}
-      <div
-        onMouseDown={(e) => {
-          if (e.button !== 0) return;
-          if ((e.target as HTMLElement).closest("button")) return;
-          onStartDrag();
-        }}
-        className={`px-2.5 py-1.5 border-t flex items-center justify-between gap-1.5 text-[11px] cursor-move transition-[background-color] duration-150 ${dividerCls} ${
-          isAcrylic
-            ? isLight
-              ? "bg-transparent text-zinc-700"
-              : "bg-transparent text-zinc-300"
-            : isLight
-              ? "bg-[#efefec] text-zinc-600"
-              : "bg-[#121215] text-zinc-400"
-        }`}
-      >
-        <div className="flex items-center gap-1.5">
-          {/* Backdrop Toggle */}
-          <div
-            className={`grid grid-cols-2 p-0.5 rounded-lg border text-[10px] font-medium ${pillGroupCls}`}
-            title="Lyrics background style"
-          >
-            {(["solid", "acrylic"] as const).map((mode) => (
-              <button
-                key={mode}
-                type="button"
-                onClick={() => handleSetBackdrop(mode)}
-                className={`px-2 py-0.5 rounded-md capitalize transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-accent ${
-                  backdropMode === mode ? pillActiveCls : pillIdleCls
-                }`}
-              >
-                {mode}
-              </button>
-            ))}
-          </div>
-
-          {/* Synced / Static Toggle */}
-          <div
-            className={`grid grid-cols-2 p-0.5 rounded-lg border text-[10px] font-medium ${pillGroupCls}`}
-            title={
-              hasSynced
-                ? "Switch between Synced (auto-scroll + click-to-seek) and Static lyrics"
-                : "No synced timestamps available for this track (showing Static)"
-            }
-          >
-            <button
-              type="button"
-              onClick={() => handleSetLyricsMode("synced")}
-              className={`px-2 py-0.5 rounded-md transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-accent ${
-                isSyncedActive
-                  ? pillActiveCls
-                  : !hasSynced
-                    ? "opacity-40 cursor-not-allowed " + pillIdleCls
-                    : pillIdleCls
-              }`}
-            >
-              Synced
-            </button>
-            <button
-              type="button"
-              onClick={() => handleSetLyricsMode("static")}
-              className={`px-2 py-0.5 rounded-md transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-accent ${
-                !isSyncedActive ? pillActiveCls : pillIdleCls
-              }`}
-            >
-              Static
-            </button>
-          </div>
-        </div>
-
-        {/* Font Size Controls */}
-        <div className="flex items-center gap-1 flex-shrink-0" title="Lyrics font size">
-          <button
-            type="button"
-            onClick={() => adjustFontSize(-1)}
-            disabled={fontSize <= 12}
-            className={`p-1 rounded border disabled:opacity-35 transition-colors ${btnCls}`}
-            title="Decrease font size"
-          >
-            <Minus className="w-2.5 h-2.5" />
-          </button>
-          <span className="text-[10px] font-mono tabular-nums w-4 text-center">{fontSize}</span>
-          <button
-            type="button"
-            onClick={() => adjustFontSize(1)}
-            disabled={fontSize >= 20}
-            className={`p-1 rounded border disabled:opacity-35 transition-colors ${btnCls}`}
-            title="Increase font size"
-          >
-            <Plus className="w-2.5 h-2.5" />
-          </button>
-        </div>
       </div>
     </div>
   );

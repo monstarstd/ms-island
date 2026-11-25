@@ -74,6 +74,7 @@ struct AppState {
     island_dock_edge: Arc<Mutex<String>>,
     lyrics_dock_edge: Arc<Mutex<String>>,
     bar_style: Arc<Mutex<String>>,
+    lyrics_bar_style: Arc<Mutex<String>>,
     lyrics_snapping: Arc<AtomicBool>,
     wifi_share: Arc<wifi_share::WifiShareManager>,
 }
@@ -132,8 +133,11 @@ async fn suggest_lyrics(query: String) -> Result<Vec<lyrics::LyricsSuggestion>, 
     Ok(lyrics::suggest_lyrics(&query).await)
 }
 
-/// Opsi 1 Smart Vertical Stack: keeps Island and Lyrics neatly docked with zero overlap
-/// even when both occupy the same screen edge (Right or Left) and both are expanded.
+/// Snug Center-Aligned Vertical Stack:
+/// - When Lyrics is alone on Right/Left -> vertically centered on that edge.
+/// - When Island & Lyrics share Right/Left -> stacked snugly (~10px apart) around vertical center,
+///   with Island anchored to bottom of its window and Lyrics anchored to top of its window so
+///   hovering either one expands away from the seam with ZERO overlap!
 fn arrange_docked_windows(app: &AppHandle, state: &AppState) {
     let Ok(Some(monitor)) = app.primary_monitor() else {
         return;
@@ -145,17 +149,17 @@ fn arrange_docked_windows(app: &AppHandle, state: &AppState) {
 
     let island_edge = lock_safe(&state.island_dock_edge).clone();
     let mut lyrics_edge = lock_safe(&state.lyrics_dock_edge).clone();
-    let style = lock_safe(&state.bar_style).clone();
+    let lyrics_style = lock_safe(&state.lyrics_bar_style).clone();
 
-    let side_offset = if style == "island" {
+    let lyrics_side_offset = if lyrics_style == "island" {
         (10.0 * scale).round() as i32
     } else {
         0
     };
-    let top_safe = (52.0 * scale).round() as i32;
-    let default_lyrics_y = (72.0 * scale).round() as i32;
-    let taskbar_h = (52.0 * scale).round() as i32;
-    let gap = (12.0 * scale).round() as i32;
+    let top_min = (12.0 * scale).round() as i32;
+    let taskbar_h = (48.0 * scale).round() as i32;
+    let usable_bottom = (screen_h - taskbar_h).max(400);
+    let seam_gap = (2.0 * scale).round() as i32; // +4px pb on Island +4px pt on Lyrics = ~10px visual gap
 
     let island_win = app.get_webview_window("island");
     let lyrics_win = app.get_webview_window("lyrics");
@@ -185,22 +189,17 @@ fn arrange_docked_windows(app: &AppHandle, state: &AppState) {
         .map(|w| w.is_visible().unwrap_or(false))
         .unwrap_or(false);
 
-    // Same-side collision prevention (Opsi 1 Smart Vertical Stack)
     let same_side = (island_edge == "right" || island_edge == "left") && lyrics_edge == island_edge;
 
     if same_side && lyrics_visible {
-        let usable_bottom = screen_h - taskbar_h;
-        let compact_top = (12.0 * scale).round() as i32;
+        let total_needed = island_h + seam_gap + lyrics_h;
+        if top_min + total_needed <= usable_bottom {
+            // Position the seam slightly below/around vertical center so the two idle pills sit dead-center!
+            let ideal_seam = usable_bottom / 2;
+            let min_seam = top_min + island_h;
+            let max_seam = usable_bottom - lyrics_h - seam_gap;
+            let seam_y = ideal_seam.clamp(min_seam, max_seam.max(min_seam));
 
-        let stack_top_opt = if top_safe + island_h + gap + lyrics_h <= usable_bottom {
-            Some(top_safe)
-        } else if compact_top + island_h + gap + lyrics_h <= usable_bottom {
-            Some(compact_top)
-        } else {
-            None
-        };
-
-        if let Some(stack_top) = stack_top_opt {
             if let Some(iw) = island_win.as_ref() {
                 let ix = if island_edge == "right" {
                     (screen_w - island_w).max(0)
@@ -209,20 +208,19 @@ fn arrange_docked_windows(app: &AppHandle, state: &AppState) {
                 };
                 let _ = iw.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
                     x: ix,
-                    y: stack_top,
+                    y: seam_y - island_h,
                 }));
             }
             if let Some(lw) = lyrics_win.as_ref() {
                 let lx = if lyrics_edge == "right" {
-                    (screen_w - lyrics_w - side_offset).max(0)
+                    (screen_w - lyrics_w - lyrics_side_offset).max(0)
                 } else {
-                    side_offset
+                    lyrics_side_offset
                 };
-                let ly = (stack_top + island_h + gap).min((usable_bottom - lyrics_h).max(12));
                 state.lyrics_snapping.store(true, Ordering::Relaxed);
                 let _ = lw.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
                     x: lx,
-                    y: ly,
+                    y: seam_y + seam_gap,
                 }));
                 let snap_clear = state.lyrics_snapping.clone();
                 tauri::async_runtime::spawn(async move {
@@ -230,6 +228,7 @@ fn arrange_docked_windows(app: &AppHandle, state: &AppState) {
                     snap_clear.store(false, Ordering::Relaxed);
                 });
             }
+            let _ = app.emit("side-stack-active", true);
             return;
         } else {
             // Very short screen fallback: mirror Lyrics cleanly to opposite side
@@ -243,25 +242,37 @@ fn arrange_docked_windows(app: &AppHandle, state: &AppState) {
         }
     }
 
-    // Standard snapped position when Lyrics is docked on left/right without colliding with Island
+    let _ = app.emit("side-stack-active", false);
+
+    // When Island is alone on Left/Right (Lyrics hidden or on other edge), keep Island centered vertically
+    if (island_edge == "right" || island_edge == "left") && island_win.is_some() {
+        if let Some(iw) = island_win.as_ref() {
+            let ix = if island_edge == "right" {
+                (screen_w - island_w).max(0)
+            } else {
+                0
+            };
+            let iy = ((usable_bottom - island_h) / 2).max(top_min);
+            let _ = iw.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
+                x: ix,
+                y: iy,
+            }));
+        }
+    }
+
+    // Standard centered-on-edge position when Lyrics is docked on Right or Left without stacking
     if (lyrics_edge == "right" || lyrics_edge == "left") && lyrics_win.is_some() {
         if let Some(lw) = lyrics_win.as_ref() {
             let lx = if lyrics_edge == "right" {
-                (screen_w - lyrics_w - side_offset).max(0)
+                (screen_w - lyrics_w - lyrics_side_offset).max(0)
             } else {
-                side_offset
+                lyrics_side_offset
             };
-            let current_y = lw.outer_position().map(|p| p.y).unwrap_or(default_lyrics_y);
-            let max_y = (screen_h - taskbar_h - lyrics_h).max(top_safe);
-            let ly = if current_y < top_safe || current_y > max_y {
-                default_lyrics_y.clamp(top_safe, max_y)
-            } else {
-                current_y
-            };
+            let centered_y = ((usable_bottom - lyrics_h) / 2).max(top_min);
             state.lyrics_snapping.store(true, Ordering::Relaxed);
             let _ = lw.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
                 x: lx,
-                y: ly,
+                y: centered_y,
             }));
             let snap_clear = state.lyrics_snapping.clone();
             tauri::async_runtime::spawn(async move {
@@ -338,11 +349,14 @@ fn toggle_lyrics_window(app: AppHandle, state: State<AppState>) -> bool {
             let _ = lyrics_win.unminimize();
             let _ = lyrics_win.show();
             ensure_lyrics_on_screen(&app, &state, &lyrics_win);
-            let _ = lyrics_win.set_focus();
             *open_lock = true;
         } else {
             let _ = lyrics_win.hide();
             *open_lock = false;
+            drop(open_lock);
+            arrange_docked_windows(&app, &state);
+            let _ = app.emit("lyrics-visibility-changed", false);
+            return false;
         }
     } else {
         *open_lock = false;
@@ -359,6 +373,7 @@ fn close_lyrics_window(app: AppHandle, state: State<AppState>) {
     if let Some(lyrics_win) = app.get_webview_window("lyrics") {
         let _ = lyrics_win.hide();
     }
+    arrange_docked_windows(&app, &state);
     let _ = app.emit("lyrics-visibility-changed", false);
 }
 
@@ -774,6 +789,14 @@ fn set_bar_style(app: AppHandle, state: State<AppState>, style: String) {
 }
 
 #[tauri::command]
+fn set_lyrics_bar_style(app: AppHandle, state: State<AppState>, style: String) {
+    let normalized = if style == "island" { "island" } else { "notch" };
+    *lock_safe(&state.lyrics_bar_style) = normalized.to_string();
+    let _ = app.emit("lyrics-bar-style-changed", normalized);
+    arrange_docked_windows(&app, &state);
+}
+
+#[tauri::command]
 fn dock_lyrics_to_edge(app: AppHandle, state: State<AppState>, edge: String) {
     let normalized = match edge.as_str() {
         "left" => "left",
@@ -907,6 +930,7 @@ fn main() {
     let island_dock_edge = Arc::new(Mutex::new(String::from("top")));
     let lyrics_dock_edge = Arc::new(Mutex::new(String::from("right")));
     let bar_style = Arc::new(Mutex::new(String::from("notch")));
+    let lyrics_bar_style = Arc::new(Mutex::new(String::from("notch")));
     let lyrics_snapping = Arc::new(AtomicBool::new(false));
     let wifi_share = Arc::new(wifi_share::WifiShareManager::new());
 
@@ -939,6 +963,7 @@ fn main() {
             island_dock_edge,
             lyrics_dock_edge,
             bar_style,
+            lyrics_bar_style,
             lyrics_snapping,
             wifi_share,
         })
@@ -982,6 +1007,7 @@ fn main() {
             reset_island_position,
             dock_island_to_edge,
             set_bar_style,
+            set_lyrics_bar_style,
             dock_lyrics_to_edge,
             set_lyrics_hit_rect,
             start_wifi_shelf,
@@ -1251,12 +1277,12 @@ fn main() {
                         .map(|s| s.height as i32)
                         .unwrap_or(468);
                     let lyrics_x = (screen_w - lyrics_w).max(0);
-                    let lyrics_y = (72.0 * lyrics_scale).round() as i32;
-                    let clamped_y = lyrics_y.min((screen_h - lyrics_h - 48).max(20));
+                    let usable_h = (screen_h - (48.0 * lyrics_scale).round() as i32).max(lyrics_h);
+                    let centered_y = ((usable_h - lyrics_h) / 2).max(16);
                     let _ = lyrics_win.set_position(tauri::Position::Physical(
                         tauri::PhysicalPosition {
                             x: lyrics_x,
-                            y: clamped_y,
+                            y: centered_y,
                         },
                     ));
                     let _ = lyrics_win.hide();

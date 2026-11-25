@@ -100,6 +100,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   const [isHovered, setIsHovered] = useState(false);
   const [activeTab, setActiveTab] = useState<TabType>("music");
   const [dockEdge, setDockEdge] = useState<"top" | "left" | "right" | "floating">("top");
+  const [isSideStacked, setIsSideStacked] = useState(false);
   const [barStyle, setBarStyle] = useState<"notch" | "island">(() => {
     const saved = localStorage.getItem("ms-island-bar-style");
     return saved === "island" ? "island" : "notch";
@@ -124,6 +125,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     let active = true;
     let unlistenEdge: (() => void) | undefined;
     let unlistenMove: (() => void) | undefined;
+    let unlistenStack: (() => void) | undefined;
 
     Promise.all([
       listen<string>("island-dock-changed", (e) => {
@@ -139,13 +141,18 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
       listen<boolean>("island-moving", (e) => {
         setIsMoving(e.payload);
       }),
-    ]).then(([uEdge, uMove]) => {
+      listen<boolean>("side-stack-active", (e) => {
+        setIsSideStacked(Boolean(e.payload));
+      }),
+    ]).then(([uEdge, uMove, uStack]) => {
       if (active) {
         unlistenEdge = uEdge;
         unlistenMove = uMove;
+        unlistenStack = uStack;
       } else {
         uEdge();
         uMove();
+        uStack();
       }
     });
 
@@ -153,6 +160,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
       active = false;
       if (unlistenEdge) unlistenEdge();
       if (unlistenMove) unlistenMove();
+      if (unlistenStack) unlistenStack();
     };
   }, [isTauri]);
 
@@ -995,15 +1003,17 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     return 142;
   })();
 
+  const sideVertAlign = isSideStacked ? "items-end pb-1" : "items-center";
+
   const outerAlignCls =
     dockEdge === "left"
       ? isIslandStyle
-        ? "justify-start items-center pl-[10px]"
-        : "justify-start items-center pl-0"
+        ? `justify-start ${sideVertAlign} pl-[10px]`
+        : `justify-start ${sideVertAlign} pl-0`
       : dockEdge === "right"
         ? isIslandStyle
-          ? "justify-end items-center pr-[10px]"
-          : "justify-end items-center pr-0"
+          ? `justify-end ${sideVertAlign} pr-[10px]`
+          : `justify-end ${sideVertAlign} pr-0`
         : dockEdge === "floating"
           ? "justify-center items-start pt-2"
           : isIslandStyle
@@ -1063,7 +1073,9 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
           ? Math.max(0, winW - width - sideOffset)
           : Math.max(0, (winW - width) / 2);
     const y = isSideDock
-      ? Math.max(0, (winH - height) / 2)
+      ? isSideStacked
+        ? Math.max(0, winH - height - 4)
+        : Math.max(0, (winH - height) / 2)
       : dockEdge === "top"
         ? isIslandStyle
           ? 10
@@ -1086,6 +1098,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     dockEdge,
     isIslandStyle,
     isSideDock,
+    isSideStacked,
     contextMenu,
     isDragOver,
     isMoving,
