@@ -112,6 +112,12 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   const isLight = theme === "light";
   const tokens = useMemo(() => getIslandThemeTokens(isLight), [isLight]);
 
+  // Keep Rust and Lyrics window synced with initial barStyle
+  useEffect(() => {
+    if (!isTauri) return;
+    invoke("set_bar_style", { style: barStyle }).catch(() => {});
+  }, [isTauri]);
+
   // 1. Dock Edge & Drag Motion Sync
   useEffect(() => {
     if (!isTauri) return;
@@ -886,14 +892,17 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     setBarStyle((prev) => {
       const next = prev === "notch" ? "island" : "notch";
       localStorage.setItem("ms-island-bar-style", next);
+      if (isTauri) {
+        invoke("set_bar_style", { style: next }).catch(() => {});
+      }
       showToast(
         "refresh",
-        next === "island" ? "Floating Island Style" : "Top Notch Style",
+        next === "island" ? "Floating Pill Style" : "Edge Notch Style",
         1700
       );
       return next;
     });
-  }, [showToast]);
+  }, [isTauri, showToast]);
 
   const handleRefreshIsland = useCallback(async () => {
     setContextMenu(null);

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import {
   X,
   Copy,
@@ -15,6 +16,10 @@ import {
   Minus,
   Plus,
   RotateCcw,
+  PanelRightClose,
+  PanelLeftClose,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react";
 import { LyricsPayload, LyricsSuggestion, MediaTrack } from "../types/media";
 import { ThemeMode } from "../types/theme";
@@ -101,6 +106,22 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
   const lineRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
   const [isPinned, setIsPinned] = useState(true);
+  const [lyricsDockEdge, setLyricsDockEdge] = useState<"right" | "left" | "floating">(() => {
+    const saved = localStorage.getItem("ms-island-lyrics-dock");
+    return saved === "left" || saved === "floating" ? saved : "right";
+  });
+  const [barStyle, setBarStyle] = useState<"notch" | "island">(() => {
+    const saved = localStorage.getItem("ms-island-bar-style");
+    return saved === "island" ? "island" : "notch";
+  });
+  const [autoPeek, setAutoPeek] = useState<boolean>(() => {
+    return localStorage.getItem("ms-island-lyrics-autopeek") === "true";
+  });
+  const [isPeekHovered, setIsPeekHovered] = useState(false);
+  const [isInputFocused, setIsInputFocused] = useState(false);
+  const peekOpenTimerRef = useRef<number | null>(null);
+  const peekCloseTimerRef = useRef<number | null>(null);
+
   const [backdropMode, setBackdropMode] = useState<"solid" | "acrylic">(() => {
     const saved = localStorage.getItem("ms-island-lyrics-backdrop");
     return saved === "acrylic" ? "acrylic" : "solid";
@@ -111,16 +132,148 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
   });
 
   const isLight = theme === "light";
-  const isAcrylic = backdropMode === "acrylic";
+  const isSideDocked = lyricsDockEdge === "right" || lyricsDockEdge === "left";
+  const isCollapsed =
+    autoPeek &&
+    isSideDocked &&
+    !isPeekHovered &&
+    !dropdownOpen &&
+    !isInputFocused &&
+    !isSearching;
+  const isAcrylic = backdropMode === "acrylic" && !isCollapsed;
 
-  // Sync native Windows DWM Acrylic / Solid backdrop whenever mode or theme changes
+  // Sync dock edge & bar style with Rust and Dynamic Island
   useEffect(() => {
     const isTauri = !!(window as any).__TAURI_INTERNALS__;
     if (!isTauri) return;
-    invoke("set_lyrics_backdrop", { mode: backdropMode, isLight }).catch((e) => {
+    let active = true;
+    let unlisteners: Array<() => void> = [];
+
+    invoke("dock_lyrics_to_edge", { edge: lyricsDockEdge }).catch(() => {});
+
+    Promise.all([
+      listen<string>("lyrics-dock-changed", (e) => {
+        if (e.payload === "left" || e.payload === "right" || e.payload === "floating") {
+          setLyricsDockEdge(e.payload);
+          localStorage.setItem("ms-island-lyrics-dock", e.payload);
+        }
+      }),
+      listen<string>("bar-style-changed", (e) => {
+        if (e.payload === "notch" || e.payload === "island") {
+          setBarStyle(e.payload);
+          localStorage.setItem("ms-island-bar-style", e.payload);
+        }
+      }),
+    ]).then((fns) => {
+      if (active) unlisteners = fns;
+      else fns.forEach((fn) => fn());
+    });
+
+    return () => {
+      active = false;
+      unlisteners.forEach((fn) => fn());
+    };
+  }, []);
+
+  // Sync native Windows DWM Acrylic / Solid backdrop (temporarily clears Acrylic while collapsed into Peek tab so transparent space stays 100% invisible)
+  useEffect(() => {
+    const isTauri = !!(window as any).__TAURI_INTERNALS__;
+    if (!isTauri) return;
+    const effectiveMode = isCollapsed ? "solid" : backdropMode;
+    invoke("set_lyrics_backdrop", { mode: effectiveMode, isLight }).catch((e) => {
       console.error("Failed to set lyrics backdrop:", e);
     });
-  }, [backdropMode, isLight]);
+  }, [backdropMode, isCollapsed, isLight]);
+
+  // Sync exact click-through hit-rect to Rust whenever collapsed into edge Peek tab
+  useEffect(() => {
+    const isTauri = !!(window as any).__TAURI_INTERNALS__;
+    if (!isTauri) return;
+
+    const updateHitRect = () => {
+      if (!isCollapsed) {
+        invoke("set_lyrics_hit_rect", {
+          x: 0,
+          y: 0,
+          width: window.innerWidth || 340,
+          height: window.innerHeight || 468,
+          pad: 0,
+          fullWindow: true,
+        }).catch(() => {});
+        return;
+      }
+
+      const winW = window.innerWidth || 340;
+      const winH = window.innerHeight || 468;
+      const peekW = 36;
+      const peekH = 112;
+      const x = lyricsDockEdge === "left" ? 0 : Math.max(0, winW - peekW);
+      const y = Math.max(0, (winH - peekH) / 2);
+
+      invoke("set_lyrics_hit_rect", {
+        x,
+        y,
+        width: peekW,
+        height: peekH,
+        pad: 0,
+        fullWindow: false,
+      }).catch(() => {});
+    };
+
+    updateHitRect();
+    window.addEventListener("resize", updateHitRect);
+    return () => window.removeEventListener("resize", updateHitRect);
+  }, [isCollapsed, lyricsDockEdge]);
+
+  useEffect(() => {
+    return () => {
+      if (peekOpenTimerRef.current) clearTimeout(peekOpenTimerRef.current);
+      if (peekCloseTimerRef.current) clearTimeout(peekCloseTimerRef.current);
+    };
+  }, []);
+
+  const handleToggleAutoPeek = () => {
+    const next = !autoPeek;
+    setAutoPeek(next);
+    localStorage.setItem("ms-island-lyrics-autopeek", String(next));
+    if (next) {
+      setIsPeekHovered(true);
+      if (lyricsDockEdge === "floating") {
+        setLyricsDockEdge("right");
+        localStorage.setItem("ms-island-lyrics-dock", "right");
+        const isTauri = !!(window as any).__TAURI_INTERNALS__;
+        if (isTauri) {
+          invoke("dock_lyrics_to_edge", { edge: "right" }).catch(() => {});
+        }
+      }
+    }
+  };
+
+  const handlePeekEnter = () => {
+    if (!autoPeek) return;
+    if (peekCloseTimerRef.current) {
+      clearTimeout(peekCloseTimerRef.current);
+      peekCloseTimerRef.current = null;
+    }
+    if (!isPeekHovered && !peekOpenTimerRef.current) {
+      peekOpenTimerRef.current = window.setTimeout(() => {
+        peekOpenTimerRef.current = null;
+        setIsPeekHovered(true);
+      }, 45);
+    }
+  };
+
+  const handlePeekLeave = () => {
+    if (!autoPeek) return;
+    if (peekOpenTimerRef.current) {
+      clearTimeout(peekOpenTimerRef.current);
+      peekOpenTimerRef.current = null;
+    }
+    peekCloseTimerRef.current = window.setTimeout(() => {
+      peekCloseTimerRef.current = null;
+      setIsPeekHovered(false);
+    }, 200);
+  };
 
   const handleSetBackdrop = (next: "solid" | "acrylic") => {
     setBackdropMode(next);
@@ -432,8 +585,21 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
     ? "text-zinc-600 hover:text-zinc-950"
     : "text-zinc-400 hover:text-white";
 
-  const shellRadiusCls = isAcrylic ? "rounded-lg" : "rounded-2xl";
-  const topRadiusCls = isAcrylic ? "rounded-t-lg" : "rounded-t-2xl";
+  const isNotchEdge = barStyle === "notch" && isSideDocked;
+  const shellRadiusCls = isAcrylic
+    ? "rounded-lg"
+    : isNotchEdge
+      ? lyricsDockEdge === "right"
+        ? "rounded-l-2xl rounded-r-none border-r-0"
+        : "rounded-r-2xl rounded-l-none border-l-0"
+      : "rounded-2xl";
+  const topRadiusCls = isAcrylic
+    ? "rounded-t-lg"
+    : isNotchEdge
+      ? lyricsDockEdge === "right"
+        ? "rounded-tl-2xl rounded-tr-none"
+        : "rounded-tr-2xl rounded-tl-none"
+      : "rounded-t-2xl";
   const dividerCls = isAcrylic
     ? isLight
       ? "border-black/10"
@@ -442,8 +608,71 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
       ? "border-zinc-300"
       : "border-zinc-800";
 
+  // Collapsed Hover-Peek vertical edge tab (36x112px; transparent surroundings are 100% click-through)
+  if (isCollapsed) {
+    const peekShapeCls =
+      barStyle === "notch"
+        ? lyricsDockEdge === "right"
+          ? "rounded-l-[16px] rounded-r-none border-r-0"
+          : "rounded-r-[16px] rounded-l-none border-l-0"
+        : "rounded-[18px]";
+
+    return (
+      <div
+        className={`w-full h-full flex items-center bg-transparent select-none ${
+          lyricsDockEdge === "left" ? "justify-start" : "justify-end"
+        }`}
+      >
+        <div
+          onMouseEnter={handlePeekEnter}
+          onMouseLeave={handlePeekLeave}
+          onClick={() => setIsPeekHovered(true)}
+          onMouseDown={(e) => {
+            if (e.button !== 0) return;
+            onStartDrag();
+          }}
+          title={
+            displayedTitle !== "Full Lyrics"
+              ? `Hover to peek lyrics · ${displayedTitle}`
+              : "Hover to peek lyrics"
+          }
+          className={`w-[36px] h-[112px] flex flex-col items-center justify-between py-2.5 border shadow-xl cursor-pointer transition-all duration-150 ${peekShapeCls} ${
+            isLight
+              ? "bg-[#f5f5f3]/95 border-zinc-300 text-zinc-900 shadow-black/20"
+              : "bg-[#0c0c0e]/95 border-zinc-800 text-zinc-100 shadow-black/75"
+          }`}
+        >
+          <span
+            className={`w-1.5 h-1.5 rounded-full ${
+              media.isPlaying ? "bg-accent" : isLight ? "bg-zinc-400" : "bg-zinc-600"
+            }`}
+          />
+
+          <div className="flex flex-col items-center gap-1">
+            <FileText className="w-3.5 h-3.5 text-accent" />
+            <span
+              className={`text-[7.5px] font-bold uppercase tracking-wider leading-none ${
+                isLight ? "text-zinc-600" : "text-zinc-400"
+              }`}
+            >
+              {hasSynced ? "SYNC" : "LYR"}
+            </span>
+          </div>
+
+          {lyricsDockEdge === "left" ? (
+            <ChevronRight className={`w-3 h-3 ${isLight ? "text-zinc-500" : "text-zinc-500"}`} />
+          ) : (
+            <ChevronLeft className={`w-3 h-3 ${isLight ? "text-zinc-500" : "text-zinc-500"}`} />
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div
+      onMouseEnter={handlePeekEnter}
+      onMouseLeave={handlePeekLeave}
       className={`w-full h-full flex flex-col ${shellRadiusCls} overflow-hidden select-none border transition-[border-color,box-shadow] duration-150 ease-out ${
         isAcrylic
           ? isLight
@@ -537,6 +766,24 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
             </button>
 
             <button
+              onClick={handleToggleAutoPeek}
+              className={`p-1.5 rounded-md transition-all focus:outline-none focus-visible:ring-1 focus-visible:ring-accent active:scale-[0.95] ${
+                autoPeek ? "text-accent hover:bg-white/10" : iconBtnCls
+              }`}
+              title={
+                autoPeek
+                  ? "Hover Auto-Peek ON (collapses to edge tab when idle)"
+                  : "Enable Hover Auto-Peek on screen edge"
+              }
+            >
+              {lyricsDockEdge === "left" ? (
+                <PanelLeftClose className="w-3.5 h-3.5" />
+              ) : (
+                <PanelRightClose className="w-3.5 h-3.5" />
+              )}
+            </button>
+
+            <button
               onClick={handleTogglePin}
               className={`p-1.5 rounded-md transition-all focus:outline-none focus-visible:ring-1 focus-visible:ring-accent active:scale-[0.95] ${
                 isPinned ? "text-accent hover:bg-white/10" : iconBtnCls
@@ -585,8 +832,10 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
                 type="text"
                 value={searchQuery}
                 onFocus={() => {
+                  setIsInputFocused(true);
                   if (searchQuery.trim().length >= 2) setDropdownOpen(true);
                 }}
+                onBlur={() => setIsInputFocused(false)}
                 onChange={(e) => {
                   setSearchQuery(e.target.value);
                   setDropdownOpen(e.target.value.trim().length >= 2);

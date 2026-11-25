@@ -70,6 +70,11 @@ struct AppState {
     clipboard_history: Arc<Mutex<ClipboardSyncPayload>>,
     auto_hide_fullscreen: Arc<AtomicBool>,
     hit_rect: Arc<Mutex<IslandHitRect>>,
+    lyrics_hit_rect: Arc<Mutex<IslandHitRect>>,
+    island_dock_edge: Arc<Mutex<String>>,
+    lyrics_dock_edge: Arc<Mutex<String>>,
+    bar_style: Arc<Mutex<String>>,
+    lyrics_snapping: Arc<AtomicBool>,
     wifi_share: Arc<wifi_share::WifiShareManager>,
 }
 
@@ -127,7 +132,153 @@ async fn suggest_lyrics(query: String) -> Result<Vec<lyrics::LyricsSuggestion>, 
     Ok(lyrics::suggest_lyrics(&query).await)
 }
 
-fn ensure_lyrics_on_screen(app: &AppHandle, lyrics_win: &tauri::WebviewWindow) {
+/// Opsi 1 Smart Vertical Stack: keeps Island and Lyrics neatly docked with zero overlap
+/// even when both occupy the same screen edge (Right or Left) and both are expanded.
+fn arrange_docked_windows(app: &AppHandle, state: &AppState) {
+    let Ok(Some(monitor)) = app.primary_monitor() else {
+        return;
+    };
+    let screen_size = monitor.size();
+    let screen_w = screen_size.width as i32;
+    let screen_h = screen_size.height as i32;
+    let scale = monitor.scale_factor().max(1.0);
+
+    let island_edge = lock_safe(&state.island_dock_edge).clone();
+    let mut lyrics_edge = lock_safe(&state.lyrics_dock_edge).clone();
+    let style = lock_safe(&state.bar_style).clone();
+
+    let side_offset = if style == "island" {
+        (10.0 * scale).round() as i32
+    } else {
+        0
+    };
+    let top_safe = (52.0 * scale).round() as i32;
+    let default_lyrics_y = (72.0 * scale).round() as i32;
+    let taskbar_h = (52.0 * scale).round() as i32;
+    let gap = (12.0 * scale).round() as i32;
+
+    let island_win = app.get_webview_window("island");
+    let lyrics_win = app.get_webview_window("lyrics");
+    let island_w = island_win
+        .as_ref()
+        .and_then(|w| w.outer_size().ok())
+        .map(|s| s.width as i32)
+        .unwrap_or((560.0 * scale).round() as i32);
+    let island_h = island_win
+        .as_ref()
+        .and_then(|w| w.outer_size().ok())
+        .map(|s| s.height as i32)
+        .unwrap_or((286.0 * scale).round() as i32);
+    let lyrics_w = lyrics_win
+        .as_ref()
+        .and_then(|w| w.outer_size().ok())
+        .map(|s| s.width as i32)
+        .unwrap_or((340.0 * scale).round() as i32);
+    let lyrics_h = lyrics_win
+        .as_ref()
+        .and_then(|w| w.outer_size().ok())
+        .map(|s| s.height as i32)
+        .unwrap_or((468.0 * scale).round() as i32);
+
+    let lyrics_visible = lyrics_win
+        .as_ref()
+        .map(|w| w.is_visible().unwrap_or(false))
+        .unwrap_or(false);
+
+    // Same-side collision prevention (Opsi 1 Smart Vertical Stack)
+    let same_side = (island_edge == "right" || island_edge == "left") && lyrics_edge == island_edge;
+
+    if same_side && lyrics_visible {
+        let usable_bottom = screen_h - taskbar_h;
+        let compact_top = (12.0 * scale).round() as i32;
+
+        let stack_top_opt = if top_safe + island_h + gap + lyrics_h <= usable_bottom {
+            Some(top_safe)
+        } else if compact_top + island_h + gap + lyrics_h <= usable_bottom {
+            Some(compact_top)
+        } else {
+            None
+        };
+
+        if let Some(stack_top) = stack_top_opt {
+            if let Some(iw) = island_win.as_ref() {
+                let ix = if island_edge == "right" {
+                    (screen_w - island_w).max(0)
+                } else {
+                    0
+                };
+                let _ = iw.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
+                    x: ix,
+                    y: stack_top,
+                }));
+            }
+            if let Some(lw) = lyrics_win.as_ref() {
+                let lx = if lyrics_edge == "right" {
+                    (screen_w - lyrics_w - side_offset).max(0)
+                } else {
+                    side_offset
+                };
+                let ly = (stack_top + island_h + gap).min((usable_bottom - lyrics_h).max(12));
+                state.lyrics_snapping.store(true, Ordering::Relaxed);
+                let _ = lw.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
+                    x: lx,
+                    y: ly,
+                }));
+                let snap_clear = state.lyrics_snapping.clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(80)).await;
+                    snap_clear.store(false, Ordering::Relaxed);
+                });
+            }
+            return;
+        } else {
+            // Very short screen fallback: mirror Lyrics cleanly to opposite side
+            lyrics_edge = if island_edge == "right" {
+                "left".to_string()
+            } else {
+                "right".to_string()
+            };
+            *lock_safe(&state.lyrics_dock_edge) = lyrics_edge.clone();
+            let _ = app.emit("lyrics-dock-changed", &lyrics_edge);
+        }
+    }
+
+    // Standard snapped position when Lyrics is docked on left/right without colliding with Island
+    if (lyrics_edge == "right" || lyrics_edge == "left") && lyrics_win.is_some() {
+        if let Some(lw) = lyrics_win.as_ref() {
+            let lx = if lyrics_edge == "right" {
+                (screen_w - lyrics_w - side_offset).max(0)
+            } else {
+                side_offset
+            };
+            let current_y = lw.outer_position().map(|p| p.y).unwrap_or(default_lyrics_y);
+            let max_y = (screen_h - taskbar_h - lyrics_h).max(top_safe);
+            let ly = if current_y < top_safe || current_y > max_y {
+                default_lyrics_y.clamp(top_safe, max_y)
+            } else {
+                current_y
+            };
+            state.lyrics_snapping.store(true, Ordering::Relaxed);
+            let _ = lw.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
+                x: lx,
+                y: ly,
+            }));
+            let snap_clear = state.lyrics_snapping.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(80)).await;
+                snap_clear.store(false, Ordering::Relaxed);
+            });
+        }
+    }
+}
+
+fn ensure_lyrics_on_screen(app: &AppHandle, state: &AppState, lyrics_win: &tauri::WebviewWindow) {
+    let edge = lock_safe(&state.lyrics_dock_edge).clone();
+    if edge == "right" || edge == "left" {
+        arrange_docked_windows(app, state);
+        return;
+    }
+
     if let Ok(Some(monitor)) = app.primary_monitor() {
         let screen_size = monitor.size();
         let screen_w = screen_size.width as i32;
@@ -148,7 +299,7 @@ fn ensure_lyrics_on_screen(app: &AppHandle, lyrics_win: &tauri::WebviewWindow) {
 
         if needs_reposition {
             let x = (screen_w - win_w - 24).max(20);
-            let y = 52.min((screen_h - win_h).max(20));
+            let y = 72.min((screen_h - win_h).max(20));
             let _ = lyrics_win.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
                 x,
                 y,
@@ -184,9 +335,9 @@ fn toggle_lyrics_window(app: AppHandle, state: State<AppState>) -> bool {
         let should_show = !currently_visible || currently_minimized;
 
         if should_show {
-            ensure_lyrics_on_screen(&app, &lyrics_win);
             let _ = lyrics_win.unminimize();
             let _ = lyrics_win.show();
+            ensure_lyrics_on_screen(&app, &state, &lyrics_win);
             let _ = lyrics_win.set_focus();
             *open_lock = true;
         } else {
@@ -579,13 +730,15 @@ async fn start_file_drag_out(app: AppHandle, path: String) -> Result<bool, Strin
 }
 
 #[tauri::command]
-fn reset_island_position(app: AppHandle) {
+fn reset_island_position(app: AppHandle, state: State<AppState>) {
+    *lock_safe(&state.island_dock_edge) = "top".to_string();
     center_island_on_primary_monitor(&app);
     let _ = app.emit("island-dock-changed", "top");
+    arrange_docked_windows(&app, &state);
 }
 
 #[tauri::command]
-fn dock_island_to_edge(app: AppHandle, edge: String) {
+fn dock_island_to_edge(app: AppHandle, state: State<AppState>, edge: String) {
     if let (Ok(Some(monitor)), Some(island_win)) =
         (app.primary_monitor(), app.get_webview_window("island"))
     {
@@ -602,12 +755,54 @@ fn dock_island_to_edge(app: AppHandle, edge: String) {
             _ => ((screen_w - win_w) / 2, 0, "top"),
         };
 
+        *lock_safe(&state.island_dock_edge) = normalized_edge.to_string();
         let _ = island_win.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
             x,
             y,
         }));
         let _ = app.emit("island-dock-changed", normalized_edge);
+        arrange_docked_windows(&app, &state);
     }
+}
+
+#[tauri::command]
+fn set_bar_style(app: AppHandle, state: State<AppState>, style: String) {
+    let normalized = if style == "island" { "island" } else { "notch" };
+    *lock_safe(&state.bar_style) = normalized.to_string();
+    let _ = app.emit("bar-style-changed", normalized);
+    arrange_docked_windows(&app, &state);
+}
+
+#[tauri::command]
+fn dock_lyrics_to_edge(app: AppHandle, state: State<AppState>, edge: String) {
+    let normalized = match edge.as_str() {
+        "left" => "left",
+        "right" => "right",
+        _ => "floating",
+    };
+    *lock_safe(&state.lyrics_dock_edge) = normalized.to_string();
+    let _ = app.emit("lyrics-dock-changed", normalized);
+    arrange_docked_windows(&app, &state);
+}
+
+#[tauri::command]
+fn set_lyrics_hit_rect(
+    state: State<AppState>,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    pad: Option<f64>,
+    full_window: bool,
+) {
+    *lock_safe(&state.lyrics_hit_rect) = IslandHitRect {
+        x,
+        y,
+        width,
+        height,
+        pad: pad.unwrap_or(0.0).max(0.0),
+        full_window,
+    };
 }
 
 #[tauri::command]
@@ -701,6 +896,18 @@ fn main() {
     }));
     let auto_hide_fullscreen = Arc::new(AtomicBool::new(true));
     let hit_rect = Arc::new(Mutex::new(IslandHitRect::default()));
+    let lyrics_hit_rect = Arc::new(Mutex::new(IslandHitRect {
+        x: 0.0,
+        y: 0.0,
+        width: 340.0,
+        height: 468.0,
+        pad: 0.0,
+        full_window: true,
+    }));
+    let island_dock_edge = Arc::new(Mutex::new(String::from("top")));
+    let lyrics_dock_edge = Arc::new(Mutex::new(String::from("right")));
+    let bar_style = Arc::new(Mutex::new(String::from("notch")));
+    let lyrics_snapping = Arc::new(AtomicBool::new(false));
     let wifi_share = Arc::new(wifi_share::WifiShareManager::new());
 
     let media_mgr_clone = media_mgr.clone();
@@ -710,6 +917,10 @@ fn main() {
     let clipboard_clone = clipboard_history.clone();
     let auto_hide_clone = auto_hide_fullscreen.clone();
     let hit_rect_clone = hit_rect.clone();
+    let lyrics_hit_rect_clone = lyrics_hit_rect.clone();
+    let island_dock_edge_setup = island_dock_edge.clone();
+    let lyrics_dock_edge_setup = lyrics_dock_edge.clone();
+    let lyrics_snapping_setup = lyrics_snapping.clone();
     let own_hwnds_setup = Arc::new(Mutex::new(Vec::<isize>::new()));
 
     tauri::Builder::default()
@@ -724,6 +935,11 @@ fn main() {
             clipboard_history,
             auto_hide_fullscreen,
             hit_rect,
+            lyrics_hit_rect,
+            island_dock_edge,
+            lyrics_dock_edge,
+            bar_style,
+            lyrics_snapping,
             wifi_share,
         })
         .invoke_handler(tauri::generate_handler![
@@ -765,6 +981,9 @@ fn main() {
             start_file_drag_out,
             reset_island_position,
             dock_island_to_edge,
+            set_bar_style,
+            dock_lyrics_to_edge,
+            set_lyrics_hit_rect,
             start_wifi_shelf,
             stop_wifi_shelf,
             get_wifi_shelf_status,
@@ -922,6 +1141,7 @@ fn main() {
                             let mut prev = lock_safe(&last_edge);
                             if prev.as_str() != edge {
                                 *prev = edge.to_string();
+                                *lock_safe(&island_dock_edge_setup) = edge.to_string();
                                 let _ = handle_drop.emit("island-dock-changed", edge);
                             }
                         }
@@ -987,6 +1207,16 @@ fn main() {
                                 tokio::time::sleep(Duration::from_millis(40)).await;
                                 snap_guard.store(false, Ordering::Relaxed);
                             }
+
+                            // Re-check Opsi 1 vertical stack if Island settled on Left or Right
+                            if edge_owned == "left" || edge_owned == "right" {
+                                let h_stack = h_snap.clone();
+                                let _ = h_snap.run_on_main_thread(move || {
+                                    if let Some(st) = h_stack.try_state::<AppState>() {
+                                        arrange_docked_windows(&h_stack, &st);
+                                    }
+                                });
+                            }
                         });
                     }
                     _ => {}
@@ -994,6 +1224,9 @@ fn main() {
             }
 
             // Pre-position hidden Lyrics window safely during setup (avoids Windows WebView2 main-thread build deadlock)
+            let mut lyrics_hwnd_raw: isize = 0;
+            let mut lyrics_scale: f64 = island_scale;
+
             if let Ok(Some(monitor)) = app.primary_monitor() {
                 let screen_size = monitor.size();
                 let screen_w = screen_size.width as i32;
@@ -1001,7 +1234,13 @@ fn main() {
 
                 if let Some(lyrics_win) = app.get_webview_window("lyrics") {
                     if let Ok(h) = lyrics_win.hwnd() {
-                        lock_safe(&own_hwnds_setup).push(h.0 as isize);
+                        lyrics_hwnd_raw = h.0 as isize;
+                        lock_safe(&own_hwnds_setup).push(lyrics_hwnd_raw);
+                    }
+                    if let Ok(sf) = lyrics_win.scale_factor() {
+                        if sf > 0.0 {
+                            lyrics_scale = sf;
+                        }
                     }
                     let lyrics_w = lyrics_win
                         .outer_size()
@@ -1011,20 +1250,25 @@ fn main() {
                         .outer_size()
                         .map(|s| s.height as i32)
                         .unwrap_or(468);
-                    let lyrics_x = (screen_w - lyrics_w - 24).max(20);
-                    let lyrics_y = 52.min((screen_h - lyrics_h).max(20));
+                    let lyrics_x = (screen_w - lyrics_w).max(0);
+                    let lyrics_y = (72.0 * lyrics_scale).round() as i32;
+                    let clamped_y = lyrics_y.min((screen_h - lyrics_h - 48).max(20));
                     let _ = lyrics_win.set_position(tauri::Position::Physical(
                         tauri::PhysicalPosition {
                             x: lyrics_x,
-                            y: lyrics_y,
+                            y: clamped_y,
                         },
                     ));
                     let _ = lyrics_win.hide();
 
                     let lyrics_win_clone = lyrics_win.clone();
                     let app_handle_close = app_handle.clone();
-                    lyrics_win.on_window_event(move |event| {
-                        if let WindowEvent::CloseRequested { api, .. } = event {
+                    let lyrics_move_seq = Arc::new(AtomicU64::new(0));
+                    let lyrics_edge_evt = lyrics_dock_edge_setup.clone();
+                    let lyrics_snap_evt = lyrics_snapping_setup.clone();
+
+                    lyrics_win.on_window_event(move |event| match event {
+                        WindowEvent::CloseRequested { api, .. } => {
                             api.prevent_close();
                             let _ = lyrics_win_clone.hide();
                             if let Some(st) = app_handle_close.try_state::<AppState>() {
@@ -1032,6 +1276,62 @@ fn main() {
                             }
                             let _ = app_handle_close.emit("lyrics-visibility-changed", false);
                         }
+                        WindowEvent::Moved(pos) => {
+                            if lyrics_snap_evt.load(Ordering::Relaxed) {
+                                return;
+                            }
+                            let seq = lyrics_move_seq.fetch_add(1, Ordering::SeqCst) + 1;
+                            let seq_check = lyrics_move_seq.clone();
+                            let h_snap = app_handle_close.clone();
+                            let edge_store = lyrics_edge_evt.clone();
+                            let px = pos.x;
+
+                            tauri::async_runtime::spawn(async move {
+                                tokio::time::sleep(Duration::from_millis(210)).await;
+                                if seq_check.load(Ordering::SeqCst) != seq {
+                                    return;
+                                }
+                                let (sw, lw) = match (
+                                    h_snap.primary_monitor(),
+                                    h_snap.get_webview_window("lyrics"),
+                                ) {
+                                    (Ok(Some(m)), Some(w)) => (
+                                        m.size().width as i32,
+                                        w.outer_size().map(|s| s.width as i32).unwrap_or(340),
+                                    ),
+                                    _ => (1920, 340),
+                                };
+                                let new_edge = if px <= 34 {
+                                    "left"
+                                } else if sw - (px + lw) <= 34 {
+                                    "right"
+                                } else {
+                                    "floating"
+                                };
+
+                                let changed = {
+                                    let mut guard = lock_safe(&edge_store);
+                                    if guard.as_str() != new_edge {
+                                        *guard = new_edge.to_string();
+                                        true
+                                    } else {
+                                        false
+                                    }
+                                };
+                                if changed {
+                                    let _ = h_snap.emit("lyrics-dock-changed", new_edge);
+                                }
+                                if new_edge == "left" || new_edge == "right" {
+                                    let h_ui = h_snap.clone();
+                                    let _ = h_snap.run_on_main_thread(move || {
+                                        if let Some(st) = h_ui.try_state::<AppState>() {
+                                            arrange_docked_windows(&h_ui, &st);
+                                        }
+                                    });
+                                }
+                            });
+                        }
+                        _ => {}
                     });
                 }
             }
@@ -1333,41 +1633,80 @@ fn main() {
                 });
             });
 
-            // 3F. Smart Native Click-Through Hit-Test (strictly matches visible idle pill bounds)
-            if island_hwnd_raw != 0 {
+            // 3F. Smart Native Click-Through Hit-Test (strictly matches visible idle pill & Lyrics peek bounds)
+            if island_hwnd_raw != 0 || lyrics_hwnd_raw != 0 {
                 let h_hit = app_handle.clone();
                 std::thread::spawn(move || {
-                    let mut last_ignore = false;
+                    let mut last_island_ignore = false;
+                    let mut last_lyrics_ignore = false;
 
                     loop {
                         std::thread::sleep(Duration::from_millis(25));
 
-                        let rect = *lock_safe(&hit_rect_clone);
-                        let should_ignore = if rect.full_window {
-                            false
-                        } else if let Some(((cx, cy), (wx, wy))) =
-                            system_tools::get_cursor_and_window_origin(island_hwnd_raw)
-                        {
-                            let pad_px: i32 = (rect.pad * island_scale).round() as i32;
-                            let left = wx + (rect.x * island_scale).floor() as i32 - pad_px;
-                            let top = wy + (rect.y * island_scale).floor() as i32 - pad_px;
-                            let right =
-                                wx + ((rect.x + rect.width) * island_scale).ceil() as i32 + pad_px;
-                            let bottom =
-                                wy + ((rect.y + rect.height) * island_scale).ceil() as i32 + pad_px;
-                            !(cx >= left && cx <= right && cy >= top && cy <= bottom)
-                        } else {
-                            false
-                        };
+                        // A. Island window click-through
+                        if island_hwnd_raw != 0 {
+                            let rect = *lock_safe(&hit_rect_clone);
+                            let should_ignore = if rect.full_window {
+                                false
+                            } else if let Some(((cx, cy), (wx, wy))) =
+                                system_tools::get_cursor_and_window_origin(island_hwnd_raw)
+                            {
+                                let pad_px: i32 = (rect.pad * island_scale).round() as i32;
+                                let left = wx + (rect.x * island_scale).floor() as i32 - pad_px;
+                                let top = wy + (rect.y * island_scale).floor() as i32 - pad_px;
+                                let right = wx
+                                    + ((rect.x + rect.width) * island_scale).ceil() as i32
+                                    + pad_px;
+                                let bottom = wy
+                                    + ((rect.y + rect.height) * island_scale).ceil() as i32
+                                    + pad_px;
+                                !(cx >= left && cx <= right && cy >= top && cy <= bottom)
+                            } else {
+                                false
+                            };
 
-                        if should_ignore != last_ignore {
-                            last_ignore = should_ignore;
-                            let h_ui = h_hit.clone();
-                            let _ = h_hit.run_on_main_thread(move || {
-                                if let Some(w) = h_ui.get_webview_window("island") {
-                                    let _ = w.set_ignore_cursor_events(should_ignore);
-                                }
-                            });
+                            if should_ignore != last_island_ignore {
+                                last_island_ignore = should_ignore;
+                                let h_ui = h_hit.clone();
+                                let _ = h_hit.run_on_main_thread(move || {
+                                    if let Some(w) = h_ui.get_webview_window("island") {
+                                        let _ = w.set_ignore_cursor_events(should_ignore);
+                                    }
+                                });
+                            }
+                        }
+
+                        // B. Lyrics window Auto-Peek click-through
+                        if lyrics_hwnd_raw != 0 {
+                            let rect = *lock_safe(&lyrics_hit_rect_clone);
+                            let should_ignore = if rect.full_window {
+                                false
+                            } else if let Some(((cx, cy), (wx, wy))) =
+                                system_tools::get_cursor_and_window_origin(lyrics_hwnd_raw)
+                            {
+                                let pad_px: i32 = (rect.pad * lyrics_scale).round() as i32;
+                                let left = wx + (rect.x * lyrics_scale).floor() as i32 - pad_px;
+                                let top = wy + (rect.y * lyrics_scale).floor() as i32 - pad_px;
+                                let right = wx
+                                    + ((rect.x + rect.width) * lyrics_scale).ceil() as i32
+                                    + pad_px;
+                                let bottom = wy
+                                    + ((rect.y + rect.height) * lyrics_scale).ceil() as i32
+                                    + pad_px;
+                                !(cx >= left && cx <= right && cy >= top && cy <= bottom)
+                            } else {
+                                false
+                            };
+
+                            if should_ignore != last_lyrics_ignore {
+                                last_lyrics_ignore = should_ignore;
+                                let h_ui = h_hit.clone();
+                                let _ = h_hit.run_on_main_thread(move || {
+                                    if let Some(w) = h_ui.get_webview_window("lyrics") {
+                                        let _ = w.set_ignore_cursor_events(should_ignore);
+                                    }
+                                });
+                            }
                         }
                     }
                 });
