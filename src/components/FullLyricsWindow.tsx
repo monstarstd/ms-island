@@ -18,9 +18,14 @@ import {
   PanelLeftClose,
   ChevronLeft,
   ChevronRight,
+  Play,
+  Pause,
+  SkipBack,
+  SkipForward,
 } from "lucide-react";
 import { LyricsPayload, LyricsSuggestion, MediaTrack } from "../types/media";
 import { ThemeMode } from "../types/theme";
+import { ScrubBar } from "./ScrubBar";
 import { copyTextReliable, formatTime } from "./island/helpers";
 
 interface SyncedLine {
@@ -58,6 +63,9 @@ interface FullLyricsWindowProps {
   media: MediaTrack;
   lyricsData: LyricsPayload;
   theme: ThemeMode;
+  onTogglePlayPause: () => void;
+  onPrev: () => void;
+  onNext: () => void;
   onSeek: (positionSec: number) => void;
   onClose: () => void;
   onStartDrag: () => void;
@@ -67,6 +75,9 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
   media,
   lyricsData,
   theme,
+  onTogglePlayPause,
+  onPrev,
+  onNext,
   onSeek,
   onClose,
   onStartDrag,
@@ -453,25 +464,33 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
     return () => window.removeEventListener("mousedown", onPointerDown);
   }, [dropdownOpen]);
 
-  // Escape key closes dropdown -> blurs input -> closes window cleanly
+  // Escape key closes dropdown -> blurs input -> closes window; Space toggles Play/Pause when not typing
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const isTyping = !!(target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA"));
+
       if (e.key === "Escape") {
         if (dropdownOpen) {
           setDropdownOpen(false);
           return;
         }
-        const target = e.target as HTMLElement | null;
-        if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) {
+        if (isTyping && target) {
           target.blur();
           return;
         }
         onClose();
+        return;
+      }
+
+      if (e.key === " " && !isTyping && media.title && !isCollapsed) {
+        e.preventDefault();
+        onTogglePlayPause();
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onClose, dropdownOpen]);
+  }, [onClose, dropdownOpen, media.title, isCollapsed, onTogglePlayPause]);
 
   const adjustFontSize = (delta: number) => {
     const next = Math.max(12, Math.min(20, fontSize + delta));
@@ -1108,6 +1127,82 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
                 </button>
               )}
             </div>
+
+            {/* Slim Mini Player Strip (only shown when active media exists) */}
+            {media.title && (
+              <div
+                className={`px-3 pt-1.5 pb-1.5 border-t flex flex-col gap-1 transition-[background-color] duration-150 ${dividerCls} ${
+                  isAcrylic
+                    ? "bg-transparent"
+                    : isLight
+                      ? "bg-[#f3f3f0]"
+                      : "bg-[#101013]"
+                }`}
+              >
+                <div className="grid grid-cols-[auto_1fr_auto] items-center gap-2">
+                  <span
+                    className={`text-[9px] font-mono tabular-nums ${
+                      isLight ? "text-zinc-600" : "text-zinc-400"
+                    }`}
+                  >
+                    {formatTime(Math.floor(isSyncedActive ? livePosSec : media.positionSec || 0))}
+                  </span>
+                  <ScrubBar
+                    value={isSyncedActive ? livePosSec : media.positionSec || 0}
+                    max={media.durationSec || 1}
+                    onChange={(val) => handleSeekLine(val)}
+                    isLight={isLight}
+                    accent
+                    disabled={!media.durationSec}
+                    ariaLabel="Playback timeline"
+                  />
+                  <span
+                    className={`text-[9px] font-mono tabular-nums ${
+                      isLight ? "text-zinc-600" : "text-zinc-400"
+                    }`}
+                  >
+                    {formatTime(media.durationSec || 0)}
+                  </span>
+                </div>
+
+                <div className="flex items-center justify-center gap-3">
+                  <button
+                    type="button"
+                    onClick={onPrev}
+                    className={`p-1 rounded-md transition-all focus:outline-none focus-visible:ring-1 focus-visible:ring-accent active:scale-[0.94] ${iconBtnCls}`}
+                    title="Previous track"
+                  >
+                    <SkipBack className="w-3.5 h-3.5" />
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={onTogglePlayPause}
+                    className={`w-6 h-6 rounded-full flex items-center justify-center transition-all focus:outline-none focus-visible:ring-1 focus-visible:ring-accent active:scale-[0.93] ${
+                      isLight
+                        ? "bg-zinc-900 hover:bg-zinc-800 text-white"
+                        : "bg-zinc-100 hover:bg-white text-zinc-950"
+                    }`}
+                    title={media.isPlaying ? "Pause (Space)" : "Play (Space)"}
+                  >
+                    {media.isPlaying ? (
+                      <Pause className="w-3 h-3 fill-current" />
+                    ) : (
+                      <Play className="w-3 h-3 fill-current ml-0.5" />
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={onNext}
+                    className={`p-1 rounded-md transition-all focus:outline-none focus-visible:ring-1 focus-visible:ring-accent active:scale-[0.94] ${iconBtnCls}`}
+                    title="Next track"
+                  >
+                    <SkipForward className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* Footer: Backdrop (Solid / Acrylic) + Mode (Synced / Static) + Font Size */}
             <div
