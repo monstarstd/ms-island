@@ -16,6 +16,7 @@ tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", features = ["json"] }
 regex = "1.10"
 url = "2.5"
+qrcode = { version = "0.14", default-features = false }
 window-vibrancy = "0.8"
 windows-core = "0.58"
 windows = { version = "0.58", features = [

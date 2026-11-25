@@ -40,6 +40,16 @@ export interface ShelfFileInfo {
   isDir: boolean;
   ext: string;
   fromDownload?: boolean;
+  fromWifi?: boolean;
+}
+
+export interface WifiShareStatus {
+  running: boolean;
+  url: string;
+  displayUrl: string;
+  qrSvg: string;
+  saveDir: string;
+  receivedCount: number;
 }
 
 export interface ActiveDownloadInfo {

@@ -8,6 +8,7 @@ mod lyrics;
 mod media_manager;
 mod system_tools;
 mod weather;
+mod wifi_share;
 
 use audio_capture::AudioSpectrumCapture;
 use media_manager::{MediaManager, MediaTrackInfo};
@@ -69,6 +70,7 @@ struct AppState {
     clipboard_history: Arc<Mutex<ClipboardSyncPayload>>,
     auto_hide_fullscreen: Arc<AtomicBool>,
     hit_rect: Arc<Mutex<IslandHitRect>>,
+    wifi_share: Arc<wifi_share::WifiShareManager>,
 }
 
 // -----------------------------------------------------------------------------
@@ -609,7 +611,42 @@ fn dock_island_to_edge(app: AppHandle, edge: String) {
 }
 
 #[tauri::command]
-fn quit_app(app: AppHandle) {
+async fn start_wifi_shelf(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<wifi_share::WifiShareStatus, String> {
+    state.wifi_share.start(app).await
+}
+
+#[tauri::command]
+fn stop_wifi_shelf(state: State<'_, AppState>) -> wifi_share::WifiShareStatus {
+    state.wifi_share.stop()
+}
+
+#[tauri::command]
+fn get_wifi_shelf_status(state: State<'_, AppState>) -> wifi_share::WifiShareStatus {
+    state.wifi_share.status()
+}
+
+#[tauri::command]
+fn sync_wifi_shelf_files(state: State<'_, AppState>, files: Vec<ShelfFileInfo>) {
+    state.wifi_share.sync_files(files);
+}
+
+#[tauri::command]
+async fn open_wifi_save_dir() -> Result<bool, ()> {
+    Ok(tokio::task::spawn_blocking(|| {
+        let dir = wifi_share::wifi_save_dir();
+        let _ = std::fs::create_dir_all(&dir);
+        system_tools::open_file_path(&dir.to_string_lossy())
+    })
+    .await
+    .unwrap_or(false))
+}
+
+#[tauri::command]
+fn quit_app(app: AppHandle, state: State<AppState>) {
+    state.wifi_share.stop();
     app.exit(0);
 }
 
@@ -664,6 +701,7 @@ fn main() {
     }));
     let auto_hide_fullscreen = Arc::new(AtomicBool::new(true));
     let hit_rect = Arc::new(Mutex::new(IslandHitRect::default()));
+    let wifi_share = Arc::new(wifi_share::WifiShareManager::new());
 
     let media_mgr_clone = media_mgr.clone();
     let cached_track_clone = cached_track.clone();
@@ -686,6 +724,7 @@ fn main() {
             clipboard_history,
             auto_hide_fullscreen,
             hit_rect,
+            wifi_share,
         })
         .invoke_handler(tauri::generate_handler![
             get_current_track,
@@ -726,6 +765,11 @@ fn main() {
             start_file_drag_out,
             reset_island_position,
             dock_island_to_edge,
+            start_wifi_shelf,
+            stop_wifi_shelf,
+            get_wifi_shelf_status,
+            sync_wifi_shelf_files,
+            open_wifi_save_dir,
             quit_app,
             start_window_drag,
             set_island_hit_rect

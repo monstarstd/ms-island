@@ -30,6 +30,7 @@ import {
   VisualizerStyle,
   VolumeInfo,
   WeatherInfo,
+  WifiShareStatus,
 } from "../types/system";
 import {
   formatAmPmTime,
@@ -565,12 +566,26 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   });
   const [isDragOver, setIsDragOver] = useState(false);
   const [activeDownload, setActiveDownload] = useState<ActiveDownloadInfo | null>(null);
+  const [shelfMode, setShelfMode] = useState<"files" | "wifi">("files");
+  const [wifiStatus, setWifiStatus] = useState<WifiShareStatus>({
+    running: false,
+    url: "",
+    displayUrl: "",
+    qrSvg: "",
+    saveDir: "",
+    receivedCount: 0,
+  });
+  const [wifiBusy, setWifiBusy] = useState(false);
+  const [wifiError, setWifiError] = useState("");
   const isDraggingOutRef = useRef(false);
   const mouseInsideRef = useRef(false);
 
   useEffect(() => {
     localStorage.setItem("ms-island-shelf", JSON.stringify(shelfFiles));
-  }, [shelfFiles]);
+    if (isTauri) {
+      invoke("sync_wifi_shelf_files", { files: shelfFiles }).catch(() => {});
+    }
+  }, [shelfFiles, isTauri]);
 
   useEffect(() => {
     if (!isTauri) return;
@@ -597,6 +612,17 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
           const filtered = prev.filter((f) => f.path !== downloadedItem.path);
           return [downloadedItem, ...filtered].slice(0, 12);
         });
+      }),
+      listen<ShelfFileInfo>("wifi-file-received", (e) => {
+        const wifiItem: ShelfFileInfo = { ...e.payload, fromWifi: true };
+        setShelfFiles((prev) => {
+          const filtered = prev.filter((f) => f.path !== wifiItem.path);
+          return [wifiItem, ...filtered].slice(0, 12);
+        });
+        setWifiStatus((prev) => ({
+          ...prev,
+          receivedCount: prev.receivedCount + 1,
+        }));
       }),
       listen("island-hotkey-toggle", () => {
         setContextMenu(null);
@@ -664,6 +690,40 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   }, []);
 
   const handleClearShelf = useCallback(() => setShelfFiles([]), []);
+
+  const handleStartWifiShelf = useCallback(async () => {
+    if (!isTauri || wifiBusy) return;
+    setWifiBusy(true);
+    setWifiError("");
+    try {
+      await invoke("sync_wifi_shelf_files", { files: shelfFiles });
+      const st = await invoke<WifiShareStatus>("start_wifi_shelf");
+      setWifiStatus(st);
+      showToast("shelf", "Wi-Fi Shelf active", 1800);
+    } catch (e: any) {
+      setWifiError(typeof e === "string" ? e : "Could not start Wi-Fi server");
+    } finally {
+      setWifiBusy(false);
+    }
+  }, [isTauri, wifiBusy, shelfFiles, showToast]);
+
+  const handleStopWifiShelf = useCallback(async () => {
+    if (!isTauri || wifiBusy) return;
+    setWifiBusy(true);
+    setWifiError("");
+    try {
+      const st = await invoke<WifiShareStatus>("stop_wifi_shelf");
+      setWifiStatus(st);
+      showToast("shelf", "Wi-Fi Shelf stopped", 1600);
+    } catch {} finally {
+      setWifiBusy(false);
+    }
+  }, [isTauri, wifiBusy, showToast]);
+
+  const handleOpenWifiSaveDir = useCallback(async () => {
+    if (!isTauri) return;
+    await invoke("open_wifi_save_dir").catch(() => {});
+  }, [isTauri]);
 
   // 11. Hardware Monitor, Battery, Auto-Hide Fullscreen & Windows Auto-Start
   const [sysStats, setSysStats] = useState<SystemStats>({
@@ -1103,7 +1163,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
                 {TABS.map(({ id, label, icon: Icon }, idx) => {
                   const isActive = activeTab === id;
                   const hasBadge =
-                    (id === "shelf" && shelfFiles.length > 0) ||
+                    (id === "shelf" && (shelfFiles.length > 0 || wifiStatus.running)) ||
                     (id === "timer" && (isTimerRunning || isTimerFinished));
                   return (
                     <button
@@ -1256,6 +1316,14 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
                   files={shelfFiles}
                   activeDownload={activeDownload}
                   isDragOver={isDragOver}
+                  shelfMode={shelfMode}
+                  onSetShelfMode={setShelfMode}
+                  wifiStatus={wifiStatus}
+                  wifiBusy={wifiBusy}
+                  wifiError={wifiError}
+                  onStartWifi={handleStartWifiShelf}
+                  onStopWifi={handleStopWifiShelf}
+                  onOpenWifiDir={handleOpenWifiSaveDir}
                   onOpenFile={handleOpenShelfFile}
                   onRevealFile={handleRevealShelfFile}
                   onDragOutFile={handleDragOutShelfFile}
