@@ -1003,7 +1003,18 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     return 142;
   })();
 
-  const sideVertAlign = isSideStacked ? "items-end pb-1" : "items-center";
+  const sideVertAlign = isSideStacked ? "items-start" : "items-center";
+
+  // Notify Rust side-stack coordinator when Island hover state changes (drives smooth sibling push!)
+  useEffect(() => {
+    if (!isTauri || !isSideDock || !isSideStacked) return;
+    invoke("set_side_stack_focus", { source: "island", active: isHovered }).catch(() => {});
+    return () => {
+      if (isHovered) {
+        invoke("set_side_stack_focus", { source: "island", active: false }).catch(() => {});
+      }
+    };
+  }, [isTauri, isSideDock, isSideStacked, isHovered]);
 
   const outerAlignCls =
     dockEdge === "left"
@@ -1074,7 +1085,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
           : Math.max(0, (winW - width) / 2);
     const y = isSideDock
       ? isSideStacked
-        ? Math.max(0, winH - height - 4)
+        ? 0
         : Math.max(0, (winH - height) / 2)
       : dockEdge === "top"
         ? isIslandStyle

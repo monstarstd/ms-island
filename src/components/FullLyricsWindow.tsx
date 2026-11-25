@@ -9,8 +9,6 @@ import {
   Search,
   Loader2,
   Music,
-  Sun,
-  Moon,
   Pin,
   PinOff,
   Minus,
@@ -18,8 +16,6 @@ import {
   RotateCcw,
   PanelRightClose,
   PanelLeftClose,
-  PanelTop,
-  RectangleHorizontal,
   ChevronLeft,
   ChevronRight,
 } from "lucide-react";
@@ -62,7 +58,6 @@ interface FullLyricsWindowProps {
   media: MediaTrack;
   lyricsData: LyricsPayload;
   theme: ThemeMode;
-  onToggleTheme: () => void;
   onSeek: (positionSec: number) => void;
   onClose: () => void;
   onStartDrag: () => void;
@@ -72,7 +67,6 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
   media,
   lyricsData,
   theme,
-  onToggleTheme,
   onSeek,
   onClose,
   onStartDrag,
@@ -107,17 +101,15 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
   const lyricsScrollRef = useRef<HTMLDivElement | null>(null);
   const lineRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
-  // Dock, Independent Notch/Pill Style, Hover Auto-Peek (ON by default so Lyrics opens as Pill/Notch first!)
+  // Universal Bar Style (controlled from MS Island) + Hover Auto-Peek (ON by default)
   const [isPinned, setIsPinned] = useState(true);
   const [lyricsDockEdge, setLyricsDockEdge] = useState<"right" | "left" | "floating">(() => {
     const saved = localStorage.getItem("ms-island-lyrics-dock");
     return saved === "left" || saved === "floating" ? saved : "right";
   });
-  const [lyricsBarStyle, setLyricsBarStyle] = useState<"notch" | "island">(() => {
-    const saved = localStorage.getItem("ms-island-lyrics-bar-style");
-    if (saved === "notch" || saved === "island") return saved;
-    const inherited = localStorage.getItem("ms-island-bar-style");
-    return inherited === "island" ? "island" : "notch";
+  const [barStyle, setBarStyle] = useState<"notch" | "island">(() => {
+    const saved = localStorage.getItem("ms-island-bar-style");
+    return saved === "island" ? "island" : "notch";
   });
   const [autoPeek, setAutoPeek] = useState<boolean>(() => {
     const saved = localStorage.getItem("ms-island-lyrics-autopeek");
@@ -165,14 +157,14 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
-  // Sync dock edge, independent Notch/Pill style, vertical stack state, and start collapsed on show
+  // Sync dock edge, universal Notch/Pill style, auto-peek state, and start collapsed on show
   useEffect(() => {
     const isTauri = !!(window as any).__TAURI_INTERNALS__;
     if (!isTauri) return;
     let active = true;
     let unlisteners: Array<() => void> = [];
 
-    invoke("set_lyrics_bar_style", { style: lyricsBarStyle }).catch(() => {});
+    invoke("set_lyrics_auto_peek", { enabled: autoPeek }).catch(() => {});
     invoke("dock_lyrics_to_edge", { edge: lyricsDockEdge }).catch(() => {});
 
     Promise.all([
@@ -182,10 +174,10 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
           localStorage.setItem("ms-island-lyrics-dock", e.payload);
         }
       }),
-      listen<string>("lyrics-bar-style-changed", (e) => {
+      listen<string>("bar-style-changed", (e) => {
         if (e.payload === "notch" || e.payload === "island") {
-          setLyricsBarStyle(e.payload);
-          localStorage.setItem("ms-island-lyrics-bar-style", e.payload);
+          setBarStyle(e.payload);
+          localStorage.setItem("ms-island-bar-style", e.payload);
         }
       }),
       listen<boolean>("side-stack-active", (e) => {
@@ -193,7 +185,6 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
       }),
       listen<boolean>("lyrics-visibility-changed", (e) => {
         if (e.payload) {
-          // Always open cleanly as Pill/Notch first when Auto-Peek is enabled
           setIsPeekHovered(false);
           setIsInputFocused(false);
           setDropdownOpen(false);
@@ -209,6 +200,19 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
       unlisteners.forEach((fn) => fn());
     };
   }, []);
+
+  // Notify Rust side-stack coordinator whenever Lyrics expands/collapses (glides Island smoothly!)
+  useEffect(() => {
+    const isTauri = !!(window as any).__TAURI_INTERNALS__;
+    if (!isTauri || !isSideDocked || !isSideStacked) return;
+    const isLyricsExpanded = !isCollapsed;
+    invoke("set_side_stack_focus", { source: "lyrics", active: isLyricsExpanded }).catch(() => {});
+    return () => {
+      if (isLyricsExpanded) {
+        invoke("set_side_stack_focus", { source: "lyrics", active: false }).catch(() => {});
+      }
+    };
+  }, [isSideDocked, isSideStacked, isCollapsed]);
 
   // Sync native Windows DWM Acrylic / Solid backdrop (temporarily clears Acrylic while collapsed into Peek tab)
   useEffect(() => {
@@ -240,7 +244,7 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
     const peekW = 46;
     const peekH = 112;
     const x = lyricsDockEdge === "left" ? 0 : Math.max(0, winSize.w - peekW);
-    const y = isSideStacked ? 4 : Math.max(0, (winSize.h - peekH) / 2);
+    const y = Math.max(0, (winSize.h - peekH) / 2);
 
     invoke("set_lyrics_hit_rect", {
       x,
@@ -250,7 +254,7 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
       pad: 0,
       fullWindow: false,
     }).catch(() => {});
-  }, [isCollapsed, lyricsDockEdge, isSideStacked, winSize]);
+  }, [isCollapsed, lyricsDockEdge, winSize]);
 
   useEffect(() => {
     return () => {
@@ -259,26 +263,19 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
     };
   }, []);
 
-  const handleToggleLyricsBarStyle = () => {
-    const next = lyricsBarStyle === "notch" ? "island" : "notch";
-    setLyricsBarStyle(next);
-    localStorage.setItem("ms-island-lyrics-bar-style", next);
-    const isTauri = !!(window as any).__TAURI_INTERNALS__;
-    if (isTauri) {
-      invoke("set_lyrics_bar_style", { style: next }).catch(() => {});
-    }
-  };
-
   const handleToggleAutoPeek = () => {
     const next = !autoPeek;
     setAutoPeek(next);
     localStorage.setItem("ms-island-lyrics-autopeek", String(next));
+    const isTauri = !!(window as any).__TAURI_INTERNALS__;
+    if (isTauri) {
+      invoke("set_lyrics_auto_peek", { enabled: next }).catch(() => {});
+    }
     if (next) {
       setIsPeekHovered(true);
       if (lyricsDockEdge === "floating") {
         setLyricsDockEdge("right");
         localStorage.setItem("ms-island-lyrics-dock", "right");
-        const isTauri = !!(window as any).__TAURI_INTERNALS__;
         if (isTauri) {
           invoke("dock_lyrics_to_edge", { edge: "right" }).catch(() => {});
         }
@@ -623,7 +620,7 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
     ? "text-zinc-600 hover:text-zinc-950"
     : "text-zinc-400 hover:text-white";
 
-  const isNotchEdge = lyricsBarStyle === "notch" && isSideDocked;
+  const isNotchEdge = barStyle === "notch" && isSideDocked;
   const shellRadiusCls = isCollapsed
     ? isNotchEdge
       ? lyricsDockEdge === "right"
@@ -654,13 +651,12 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
       ? "border-zinc-300"
       : "border-zinc-800";
 
-  const expandedH = isSideStacked ? Math.max(260, winSize.h - 4) : winSize.h;
   const shellW = isCollapsed ? 46 : winSize.w;
-  const shellH = isCollapsed ? 112 : expandedH;
+  const shellH = isCollapsed ? 112 : winSize.h;
 
   const outerAlignCls = `${
     lyricsDockEdge === "left" ? "justify-start" : "justify-end"
-  } ${isSideStacked ? "items-start pt-1" : "items-center"}`;
+  } items-center`;
 
   return (
     <div className={`w-full h-full flex bg-transparent select-none ${outerAlignCls}`}>
@@ -803,24 +799,6 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
                   </button>
 
                   <button
-                    onClick={handleToggleLyricsBarStyle}
-                    className={`p-1 rounded-md transition-all focus:outline-none focus-visible:ring-1 focus-visible:ring-accent active:scale-[0.95] ${
-                      lyricsBarStyle === "island" ? "text-accent hover:bg-white/10" : iconBtnCls
-                    }`}
-                    title={
-                      lyricsBarStyle === "notch"
-                        ? "Lyrics Style: Edge Notch (Click for Floating Pill)"
-                        : "Lyrics Style: Floating Pill (Click for Edge Notch)"
-                    }
-                  >
-                    {lyricsBarStyle === "notch" ? (
-                      <RectangleHorizontal className="w-3.5 h-3.5" />
-                    ) : (
-                      <PanelTop className="w-3.5 h-3.5" />
-                    )}
-                  </button>
-
-                  <button
                     onClick={handleToggleAutoPeek}
                     className={`p-1 rounded-md transition-all focus:outline-none focus-visible:ring-1 focus-visible:ring-accent active:scale-[0.95] ${
                       autoPeek ? "text-accent hover:bg-white/10" : iconBtnCls
@@ -846,14 +824,6 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
                     title={isPinned ? "Always on top (Click to unpin)" : "Pin always on top"}
                   >
                     {isPinned ? <Pin className="w-3.5 h-3.5" /> : <PinOff className="w-3.5 h-3.5" />}
-                  </button>
-
-                  <button
-                    onClick={onToggleTheme}
-                    className={`p-1 rounded-md transition-all focus:outline-none focus-visible:ring-1 focus-visible:ring-accent active:scale-[0.95] ${iconBtnCls}`}
-                    title={isLight ? "Switch to Dark Mode" : "Switch to Light Mode"}
-                  >
-                    {isLight ? <Moon className="w-3.5 h-3.5" /> : <Sun className="w-3.5 h-3.5" />}
                   </button>
 
                   <button

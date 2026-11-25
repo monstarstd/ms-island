@@ -996,3 +996,63 @@ pub fn sync_autostart_path_if_enabled() {
         let _ = set_autostart_enabled(true);
     }
 }
+
+#[link(name = "user32")]
+extern "system" {
+    fn BeginDeferWindowPos(num_windows: i32) -> isize;
+    fn DeferWindowPos(
+        hdwp: isize,
+        hwnd: isize,
+        hwnd_insert_after: isize,
+        x: i32,
+        y: i32,
+        cx: i32,
+        cy: i32,
+        flags: u32,
+    ) -> isize;
+    fn EndDeferWindowPos(hdwp: isize) -> i32;
+}
+
+/// Moves multiple Win32 windows atomically in a single DWM compositor frame without activating/stealing focus.
+pub fn move_windows_atomic(moves: &[(isize, i32, i32)]) {
+    if moves.is_empty() {
+        return;
+    }
+    const SWP_NOSIZE: u32 = 0x0001;
+    const SWP_NOZORDER: u32 = 0x0004;
+    const SWP_NOACTIVATE: u32 = 0x0010;
+    const FLAGS: u32 = SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE;
+
+    unsafe {
+        let mut hdwp = BeginDeferWindowPos(moves.len() as i32);
+        if hdwp == 0 {
+            return;
+        }
+        for &(hwnd, x, y) in moves {
+            if hwnd == 0 {
+                continue;
+            }
+            let next = DeferWindowPos(hdwp, hwnd, 0, x, y, 0, 0, FLAGS);
+            if next == 0 {
+                return;
+            }
+            hdwp = next;
+        }
+        let _ = EndDeferWindowPos(hdwp);
+    }
+}
+
+/// Reads current physical top-left origin of a Win32 window.
+pub fn get_window_origin(hwnd_raw: isize) -> Option<(i32, i32)> {
+    if hwnd_raw == 0 {
+        return None;
+    }
+    unsafe {
+        let mut rect = RECT::default();
+        if GetWindowRect(HWND(hwnd_raw as *mut _), &mut rect).is_ok() {
+            Some((rect.left, rect.top))
+        } else {
+            None
+        }
+    }
+}

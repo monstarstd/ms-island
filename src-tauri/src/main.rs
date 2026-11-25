@@ -74,7 +74,10 @@ struct AppState {
     island_dock_edge: Arc<Mutex<String>>,
     lyrics_dock_edge: Arc<Mutex<String>>,
     bar_style: Arc<Mutex<String>>,
-    lyrics_bar_style: Arc<Mutex<String>>,
+    island_side_hovered: Arc<AtomicBool>,
+    lyrics_side_hovered: Arc<AtomicBool>,
+    lyrics_auto_peek: Arc<AtomicBool>,
+    stack_anim_seq: Arc<AtomicU64>,
     lyrics_snapping: Arc<AtomicBool>,
     wifi_share: Arc<wifi_share::WifiShareManager>,
 }
@@ -133,12 +136,83 @@ async fn suggest_lyrics(query: String) -> Result<Vec<lyrics::LyricsSuggestion>, 
     Ok(lyrics::suggest_lyrics(&query).await)
 }
 
-/// Snug Center-Aligned Vertical Stack:
-/// - When Lyrics is alone on Right/Left -> vertically centered on that edge.
-/// - When Island & Lyrics share Right/Left -> stacked snugly (~10px apart) around vertical center,
-///   with Island anchored to bottom of its window and Lyrics anchored to top of its window so
-///   hovering either one expands away from the seam with ZERO overlap!
-fn arrange_docked_windows(app: &AppHandle, state: &AppState) {
+/// Smoothly glides Island & Lyrics windows atomically in 1 DWM frame per step (168ms cubic ease-out)
+/// using Win32 BeginDeferWindowPos/EndDeferWindowPos so they never tear or steal focus.
+fn animate_windows_to(
+    app: &AppHandle,
+    state: &AppState,
+    targets: Vec<(isize, i32, i32)>,
+    animate: bool,
+) {
+    let seq = state.stack_anim_seq.fetch_add(1, Ordering::SeqCst) + 1;
+    let mut pairs: Vec<(isize, i32, i32, i32, i32)> = Vec::new();
+    for (hwnd, tx, ty) in targets {
+        if hwnd == 0 {
+            continue;
+        }
+        let (sx, sy) = system_tools::get_window_origin(hwnd).unwrap_or((tx, ty));
+        if sx != tx || sy != ty {
+            pairs.push((hwnd, sx, sy, tx, ty));
+        }
+    }
+    if pairs.is_empty() {
+        return;
+    }
+
+    if !animate {
+        state.lyrics_snapping.store(true, Ordering::Relaxed);
+        let final_moves: Vec<(isize, i32, i32)> =
+            pairs.iter().map(|&(h, _, _, tx, ty)| (h, tx, ty)).collect();
+        system_tools::move_windows_atomic(&final_moves);
+        let snap_clear = state.lyrics_snapping.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(80)).await;
+            snap_clear.store(false, Ordering::Relaxed);
+        });
+        return;
+    }
+
+    let seq_ref = state.stack_anim_seq.clone();
+    let snap_ref = state.lyrics_snapping.clone();
+    let app_c = app.clone();
+    snap_ref.store(true, Ordering::Relaxed);
+
+    tauri::async_runtime::spawn(async move {
+        const STEPS: u32 = 12;
+        for step in 1..=STEPS {
+            if seq_ref.load(Ordering::SeqCst) != seq {
+                return;
+            }
+            let t = (step as f32) / (STEPS as f32);
+            let ease = 1.0 - (1.0 - t).powi(3);
+            let frame_moves: Vec<(isize, i32, i32)> = pairs
+                .iter()
+                .map(|&(h, sx, sy, tx, ty)| {
+                    let nx = sx + ((tx - sx) as f32 * ease).round() as i32;
+                    let ny = sy + ((ty - sy) as f32 * ease).round() as i32;
+                    (h, nx, ny)
+                })
+                .collect();
+
+            let _ = app_c.run_on_main_thread(move || {
+                system_tools::move_windows_atomic(&frame_moves);
+            });
+            tokio::time::sleep(Duration::from_millis(14)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(45)).await;
+        if seq_ref.load(Ordering::SeqCst) == seq {
+            snap_ref.store(false, Ordering::Relaxed);
+        }
+    });
+}
+
+/// Dynamic Center-Focus & Sibling Push Coordinator:
+/// - Universal Notch/Pill style applies cleanly to BOTH Island and Lyrics.
+/// - Alone on Right/Left -> vertically centered on that edge.
+/// - Same side (Island + Lyrics) -> tight 10px pair centered vertically when idle;
+///   whichever one is hovered expands at vertical center while its sibling glides smoothly
+///   out of the way (preserving 10px gap + 100% anti-bounce guarantee!).
+fn arrange_docked_windows_ex(app: &AppHandle, state: &AppState, animate: bool) {
     let Ok(Some(monitor)) = app.primary_monitor() else {
         return;
     };
@@ -149,9 +223,17 @@ fn arrange_docked_windows(app: &AppHandle, state: &AppState) {
 
     let island_edge = lock_safe(&state.island_dock_edge).clone();
     let mut lyrics_edge = lock_safe(&state.lyrics_dock_edge).clone();
-    let lyrics_style = lock_safe(&state.lyrics_bar_style).clone();
+    let universal_style = lock_safe(&state.bar_style).clone();
+    let focus = if state.island_side_hovered.load(Ordering::Relaxed) {
+        "island"
+    } else if state.lyrics_side_hovered.load(Ordering::Relaxed) {
+        "lyrics"
+    } else {
+        "none"
+    };
+    let lyrics_auto_peek = state.lyrics_auto_peek.load(Ordering::Relaxed);
 
-    let lyrics_side_offset = if lyrics_style == "island" {
+    let lyrics_side_offset = if universal_style == "island" {
         (10.0 * scale).round() as i32
     } else {
         0
@@ -159,10 +241,22 @@ fn arrange_docked_windows(app: &AppHandle, state: &AppState) {
     let top_min = (12.0 * scale).round() as i32;
     let taskbar_h = (48.0 * scale).round() as i32;
     let usable_bottom = (screen_h - taskbar_h).max(400);
-    let seam_gap = (2.0 * scale).round() as i32; // +4px pb on Island +4px pt on Lyrics = ~10px visual gap
+    let mid_y = usable_bottom / 2;
+    let gap = (10.0 * scale).round() as i32;
 
     let island_win = app.get_webview_window("island");
     let lyrics_win = app.get_webview_window("lyrics");
+    let island_hwnd = island_win
+        .as_ref()
+        .and_then(|w| w.hwnd().ok())
+        .map(|h| h.0 as isize)
+        .unwrap_or(0);
+    let lyrics_hwnd = lyrics_win
+        .as_ref()
+        .and_then(|w| w.hwnd().ok())
+        .map(|h| h.0 as isize)
+        .unwrap_or(0);
+
     let island_w = island_win
         .as_ref()
         .and_then(|w| w.outer_size().ok())
@@ -192,43 +286,82 @@ fn arrange_docked_windows(app: &AppHandle, state: &AppState) {
     let same_side = (island_edge == "right" || island_edge == "left") && lyrics_edge == island_edge;
 
     if same_side && lyrics_visible {
-        let total_needed = island_h + seam_gap + lyrics_h;
-        if top_min + total_needed <= usable_bottom {
-            // Position the seam slightly below/around vertical center so the two idle pills sit dead-center!
-            let ideal_seam = usable_bottom / 2;
-            let min_seam = top_min + island_h;
-            let max_seam = usable_bottom - lyrics_h - seam_gap;
-            let seam_y = ideal_seam.clamp(min_seam, max_seam.max(min_seam));
+        let island_idle_h = (154.0 * scale).round() as i32;
+        let island_exp_h = (262.0 * scale).round() as i32;
+        let lyrics_peek_h = (112.0 * scale).round() as i32;
+        let peek_offset_in_win = ((lyrics_h - lyrics_peek_h) / 2).max(0);
 
-            if let Some(iw) = island_win.as_ref() {
-                let ix = if island_edge == "right" {
-                    (screen_w - island_w).max(0)
+        let ix = if island_edge == "right" {
+            (screen_w - island_w).max(0)
+        } else {
+            0
+        };
+        let lx = if lyrics_edge == "right" {
+            (screen_w - lyrics_w - lyrics_side_offset).max(0)
+        } else {
+            lyrics_side_offset
+        };
+
+        // Check if screen can fit a stacked pair cleanly
+        if top_min + island_idle_h + gap + lyrics_h <= usable_bottom {
+            // Pair centered vertically when idle: Island pill top-anchored inside its window,
+            // Lyrics pill vertically centered inside its window (zero bounce on expand!).
+            let pair_h = island_idle_h + gap + lyrics_peek_h;
+            let idle_island_y = (mid_y - pair_h / 2)
+                .clamp(top_min, (usable_bottom - island_exp_h - gap - lyrics_peek_h).max(top_min));
+            let idle_lyrics_pill_top = idle_island_y + island_idle_h + gap;
+            let idle_lyrics_win_y = (idle_lyrics_pill_top - peek_offset_in_win)
+                .clamp(top_min, (usable_bottom - lyrics_h).max(top_min));
+
+            let (target_iy, target_ly) = if !lyrics_auto_peek {
+                // Lyrics permanently expanded: keep Island cleanly above Lyrics
+                let max_ly = (usable_bottom - lyrics_h).max(top_min);
+                if focus == "island" {
+                    let iy = top_min;
+                    let ly = (iy + island_exp_h + gap).min(max_ly);
+                    (iy, ly)
                 } else {
-                    0
-                };
-                let _ = iw.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
-                    x: ix,
-                    y: seam_y - island_h,
-                }));
-            }
-            if let Some(lw) = lyrics_win.as_ref() {
-                let lx = if lyrics_edge == "right" {
-                    (screen_w - lyrics_w - lyrics_side_offset).max(0)
-                } else {
-                    lyrics_side_offset
-                };
-                state.lyrics_snapping.store(true, Ordering::Relaxed);
-                let _ = lw.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
-                    x: lx,
-                    y: seam_y + seam_gap,
-                }));
-                let snap_clear = state.lyrics_snapping.clone();
-                tauri::async_runtime::spawn(async move {
-                    tokio::time::sleep(Duration::from_millis(80)).await;
-                    snap_clear.store(false, Ordering::Relaxed);
-                });
-            }
+                    let ly = (mid_y - lyrics_h / 2)
+                        .clamp(top_min + island_idle_h + gap, max_ly.max(top_min));
+                    let iy = (ly - gap - island_idle_h).max(top_min);
+                    (iy, ly)
+                }
+            } else {
+                match focus {
+                    "island" => {
+                        // Island stays anchored at idle_island_y (100% anti-bounce) and expands down to 262px;
+                        // Lyrics pill glides smoothly down to sit 10px below expanded Island!
+                        let expanded_island_bottom = idle_island_y + island_exp_h;
+                        let pushed_lyrics_pill_top = expanded_island_bottom + gap;
+                        let ly = (pushed_lyrics_pill_top - peek_offset_in_win)
+                            .clamp(top_min, (usable_bottom - lyrics_h).max(top_min));
+                        (idle_island_y, ly)
+                    }
+                    "lyrics" => {
+                        // Lyrics expands right at vertical center (wrapping 100% of its idle pill -> 0% bounce!);
+                        // Island pill glides smoothly up to sit 10px above expanded Lyrics!
+                        let max_ly = (usable_bottom - lyrics_h).max(top_min);
+                        let ideal_ly = (mid_y - lyrics_h / 2).clamp(top_min, max_ly);
+                        // Ensure Island pill still fits above Lyrics without going off top of screen
+                        let min_ly_for_island = (top_min + island_idle_h + gap).min(max_ly);
+                        let ly = ideal_ly.max(min_ly_for_island);
+                        let iy = (ly - gap - island_idle_h).max(top_min);
+                        (iy, ly)
+                    }
+                    _ => {
+                        // Both idle: snug 10px vertical pair dead-centered on screen!
+                        (idle_island_y, idle_lyrics_win_y)
+                    }
+                }
+            };
+
             let _ = app.emit("side-stack-active", true);
+            animate_windows_to(
+                app,
+                state,
+                vec![(island_hwnd, ix, target_iy), (lyrics_hwnd, lx, target_ly)],
+                animate,
+            );
             return;
         } else {
             // Very short screen fallback: mirror Lyrics cleanly to opposite side
@@ -244,43 +377,30 @@ fn arrange_docked_windows(app: &AppHandle, state: &AppState) {
 
     let _ = app.emit("side-stack-active", false);
 
-    // When Island is alone on Left/Right (Lyrics hidden or on other edge), keep Island centered vertically
-    if (island_edge == "right" || island_edge == "left") && island_win.is_some() {
-        if let Some(iw) = island_win.as_ref() {
-            let ix = if island_edge == "right" {
-                (screen_w - island_w).max(0)
-            } else {
-                0
-            };
-            let iy = ((usable_bottom - island_h) / 2).max(top_min);
-            let _ = iw.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
-                x: ix,
-                y: iy,
-            }));
-        }
+    let mut moves = Vec::new();
+    if (island_edge == "right" || island_edge == "left") && island_hwnd != 0 {
+        let ix = if island_edge == "right" {
+            (screen_w - island_w).max(0)
+        } else {
+            0
+        };
+        let iy = ((usable_bottom - island_h) / 2).max(top_min);
+        moves.push((island_hwnd, ix, iy));
     }
+    if (lyrics_edge == "right" || lyrics_edge == "left") && lyrics_hwnd != 0 {
+        let lx = if lyrics_edge == "right" {
+            (screen_w - lyrics_w - lyrics_side_offset).max(0)
+        } else {
+            lyrics_side_offset
+        };
+        let ly = ((usable_bottom - lyrics_h) / 2).max(top_min);
+        moves.push((lyrics_hwnd, lx, ly));
+    }
+    animate_windows_to(app, state, moves, animate);
+}
 
-    // Standard centered-on-edge position when Lyrics is docked on Right or Left without stacking
-    if (lyrics_edge == "right" || lyrics_edge == "left") && lyrics_win.is_some() {
-        if let Some(lw) = lyrics_win.as_ref() {
-            let lx = if lyrics_edge == "right" {
-                (screen_w - lyrics_w - lyrics_side_offset).max(0)
-            } else {
-                lyrics_side_offset
-            };
-            let centered_y = ((usable_bottom - lyrics_h) / 2).max(top_min);
-            state.lyrics_snapping.store(true, Ordering::Relaxed);
-            let _ = lw.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
-                x: lx,
-                y: centered_y,
-            }));
-            let snap_clear = state.lyrics_snapping.clone();
-            tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(Duration::from_millis(80)).await;
-                snap_clear.store(false, Ordering::Relaxed);
-            });
-        }
-    }
+fn arrange_docked_windows(app: &AppHandle, state: &AppState) {
+    arrange_docked_windows_ex(app, state, false);
 }
 
 fn ensure_lyrics_on_screen(app: &AppHandle, state: &AppState, lyrics_win: &tauri::WebviewWindow) {
@@ -789,11 +909,38 @@ fn set_bar_style(app: AppHandle, state: State<AppState>, style: String) {
 }
 
 #[tauri::command]
-fn set_lyrics_bar_style(app: AppHandle, state: State<AppState>, style: String) {
-    let normalized = if style == "island" { "island" } else { "notch" };
-    *lock_safe(&state.lyrics_bar_style) = normalized.to_string();
-    let _ = app.emit("lyrics-bar-style-changed", normalized);
-    arrange_docked_windows(&app, &state);
+fn set_side_stack_focus(app: AppHandle, state: State<AppState>, source: String, active: bool) {
+    let prev = if state.island_side_hovered.load(Ordering::Relaxed) {
+        1u8
+    } else if state.lyrics_side_hovered.load(Ordering::Relaxed) {
+        2u8
+    } else {
+        0u8
+    };
+
+    if source == "island" {
+        state.island_side_hovered.store(active, Ordering::Relaxed);
+    } else if source == "lyrics" {
+        state.lyrics_side_hovered.store(active, Ordering::Relaxed);
+    }
+
+    let next = if state.island_side_hovered.load(Ordering::Relaxed) {
+        1u8
+    } else if state.lyrics_side_hovered.load(Ordering::Relaxed) {
+        2u8
+    } else {
+        0u8
+    };
+
+    if next != prev {
+        arrange_docked_windows_ex(&app, &state, true);
+    }
+}
+
+#[tauri::command]
+fn set_lyrics_auto_peek(app: AppHandle, state: State<AppState>, enabled: bool) {
+    state.lyrics_auto_peek.store(enabled, Ordering::Relaxed);
+    arrange_docked_windows_ex(&app, &state, true);
 }
 
 #[tauri::command]
@@ -930,7 +1077,10 @@ fn main() {
     let island_dock_edge = Arc::new(Mutex::new(String::from("top")));
     let lyrics_dock_edge = Arc::new(Mutex::new(String::from("right")));
     let bar_style = Arc::new(Mutex::new(String::from("notch")));
-    let lyrics_bar_style = Arc::new(Mutex::new(String::from("notch")));
+    let island_side_hovered = Arc::new(AtomicBool::new(false));
+    let lyrics_side_hovered = Arc::new(AtomicBool::new(false));
+    let lyrics_auto_peek = Arc::new(AtomicBool::new(true));
+    let stack_anim_seq = Arc::new(AtomicU64::new(0));
     let lyrics_snapping = Arc::new(AtomicBool::new(false));
     let wifi_share = Arc::new(wifi_share::WifiShareManager::new());
 
@@ -963,7 +1113,10 @@ fn main() {
             island_dock_edge,
             lyrics_dock_edge,
             bar_style,
-            lyrics_bar_style,
+            island_side_hovered,
+            lyrics_side_hovered,
+            lyrics_auto_peek,
+            stack_anim_seq,
             lyrics_snapping,
             wifi_share,
         })
@@ -1007,7 +1160,8 @@ fn main() {
             reset_island_position,
             dock_island_to_edge,
             set_bar_style,
-            set_lyrics_bar_style,
+            set_side_stack_focus,
+            set_lyrics_auto_peek,
             dock_lyrics_to_edge,
             set_lyrics_hit_rect,
             start_wifi_shelf,
@@ -1103,6 +1257,7 @@ fn main() {
                 let is_moving_flag = Arc::new(AtomicBool::new(false));
                 let is_snapping = Arc::new(AtomicBool::new(false));
                 let snap_flag_evt = is_snapping.clone();
+                let stack_snap_island = lyrics_snapping_setup.clone();
 
                 island_win.on_window_event(move |event| match event {
                     WindowEvent::DragDrop(dd) => match dd {
@@ -1125,7 +1280,9 @@ fn main() {
                         _ => {}
                     },
                     WindowEvent::Moved(pos) => {
-                        if snap_flag_evt.load(Ordering::Relaxed) {
+                        if snap_flag_evt.load(Ordering::Relaxed)
+                            || stack_snap_island.load(Ordering::Relaxed)
+                        {
                             return;
                         }
 

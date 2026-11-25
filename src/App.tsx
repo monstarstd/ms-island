@@ -317,7 +317,6 @@ export const App: React.FC = () => {
             media={media}
             lyricsData={lyricsData}
             theme={theme}
-            onToggleTheme={handleToggleTheme}
             onSeek={handleSeek}
             onClose={handleCloseLyricsWindow}
             onStartDrag={handleStartDrag}
