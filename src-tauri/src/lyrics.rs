@@ -125,7 +125,7 @@ fn http_client() -> &'static reqwest::Client {
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()
             .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-            .timeout(Duration::from_secs(6))
+            .timeout(Duration::from_secs(4))
             .build()
             .expect("failed to build lyrics HTTP client")
     })
@@ -134,7 +134,7 @@ fn http_client() -> &'static reqwest::Client {
 fn standalone_brackets_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"[\(\[\{【『「][^\)\]\}\】』」]*[\)\]\}】』」]").unwrap()
+        Regex::new(r"[\(\[\{【『「][^\)\]\}】』」]*[\)\]\}】』」]").unwrap()
     })
 }
 
@@ -687,23 +687,36 @@ pub async fn suggest_lyrics(query: &str) -> Vec<LyricsSuggestion> {
     }
 
     let client = http_client();
-    let reference_tokens = tokenize(&normalize_text(trimmed));
+    let cleaned = normalize_text(trimmed);
+    let reference_tokens = tokenize(&cleaned);
+    let smart_queries = build_smart_queries(trimmed, "");
 
-    let mut collected = query_lrclib_candidates(client, trimmed).await;
+    // If the user pasted a cluttered title (brackets/separators/collabs), try the cleanest query first!
+    let looks_cluttered = trimmed.contains('(')
+        || trimmed.contains('[')
+        || trimmed.contains(" - ")
+        || trimmed.contains(" & ")
+        || trimmed.contains(" | ");
+
+    let first_q = if looks_cluttered {
+        smart_queries.first().map(String::as_str).unwrap_or(trimmed)
+    } else {
+        trimmed
+    };
+
+    let mut collected = query_lrclib_candidates(client, first_q).await;
+    let first_lower = first_q.to_lowercase();
 
     if collected.len() < 3 {
-        let smart_queries = build_smart_queries(trimmed, "");
-        let raw_lower = trimmed.to_lowercase();
         let mut extra_calls = 0usize;
-
         for q in smart_queries {
-            if q.to_lowercase() == raw_lower {
+            if q.to_lowercase() == first_lower {
                 continue;
             }
             let batch = query_lrclib_candidates(client, &q).await;
             extra_calls += 1;
             collected.extend(batch);
-            if collected.len() >= 6 || extra_calls >= 3 {
+            if collected.len() >= 6 || extra_calls >= 2 {
                 break;
             }
         }
@@ -756,4 +769,62 @@ pub async fn manual_search_lyrics(query: &str) -> LyricsPayload {
 
 fn urlencoding(input: &str) -> String {
     url::form_urlencoded::byte_serialize(input.as_bytes()).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn all_regexes_compile_without_panic() {
+        let _ = standalone_brackets_re();
+        let _ = noise_phrases_re();
+        let _ = collab_split_re();
+        let _ = ensemble_suffix_re();
+        let _ = whitespace_re();
+        let _ = lrc_timestamp_re();
+        let _ = lrc_id_tag_re();
+        let _ = genius_container_re();
+        let _ = html_br_re();
+        let _ = html_tag_re();
+    }
+
+    #[test]
+    fn smart_queries_handle_pamungkas_orchestra_extended() {
+        let qs = build_smart_queries(
+            "I Love You but I’m Letting Go - Pamungkas & Erwin Gutawa Orchestra (Extended Version)",
+            "YouTube",
+        );
+        assert!(
+            qs.iter().any(|q| q == "I Love You but I'm Letting Go Pamungkas"),
+            "unexpected queries: {:?}",
+            qs
+        );
+        assert!(
+            qs.iter().any(|q| q == "I Love You but I'm Letting Go"),
+            "missing title-only fallback: {:?}",
+            qs
+        );
+    }
+
+    #[tokio::test]
+    async fn live_fetch_pamungkas_finds_lyrics() {
+        let payload = fetch_full_lyrics(
+            "I Love You but I’m Letting Go - Pamungkas & Erwin Gutawa Orchestra (Extended Version)",
+            "YouTube",
+            360,
+        )
+        .await;
+        assert_eq!(payload.status, "found", "payload: {:?}", payload.plain_lyrics);
+        assert!(
+            payload
+                .track_name
+                .as_deref()
+                .unwrap_or("")
+                .to_lowercase()
+                .contains("letting go"),
+            "unexpected track: {:?}",
+            payload.track_name
+        );
+    }
 }
