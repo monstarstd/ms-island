@@ -79,6 +79,8 @@ export interface WeatherInfo {
 
 export type VisualizerStyle = "bars" | "wave" | "dots";
 
+export type BarStyle = "notch" | "island" | "orb" | "handle" | "tile";
+
 export type PomodoroPhase = "focus" | "short" | "long";
 
 export interface QuickSnippet {

@@ -24,6 +24,7 @@ import {
   SkipForward,
 } from "lucide-react";
 import { LyricsPayload, LyricsSuggestion, MediaTrack } from "../types/media";
+import { BarStyle } from "../types/system";
 import { ThemeMode } from "../types/theme";
 import { ScrubBar } from "./ScrubBar";
 import { copyTextReliable, formatTime } from "./island/helpers";
@@ -118,9 +119,11 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
     const saved = localStorage.getItem("ms-island-lyrics-dock");
     return saved === "left" || saved === "floating" ? saved : "right";
   });
-  const [barStyle, setBarStyle] = useState<"notch" | "island">(() => {
+  const [barStyle, setBarStyle] = useState<BarStyle>(() => {
     const saved = localStorage.getItem("ms-island-bar-style");
-    return saved === "island" ? "island" : "notch";
+    return saved === "island" || saved === "orb" || saved === "handle" || saved === "tile"
+      ? saved
+      : "notch";
   });
   const [autoPeek, setAutoPeek] = useState<boolean>(() => {
     const saved = localStorage.getItem("ms-island-lyrics-autopeek");
@@ -186,7 +189,13 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
         }
       }),
       listen<string>("bar-style-changed", (e) => {
-        if (e.payload === "notch" || e.payload === "island") {
+        if (
+          e.payload === "notch" ||
+          e.payload === "island" ||
+          e.payload === "orb" ||
+          e.payload === "handle" ||
+          e.payload === "tile"
+        ) {
           setBarStyle(e.payload);
           localStorage.setItem("ms-island-bar-style", e.payload);
         }
@@ -235,7 +244,7 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
     });
   }, [backdropMode, isCollapsed, isLight]);
 
-  // Sync exact click-through hit-rect to Rust whenever collapsed into edge Pill/Notch
+  // Sync exact click-through hit-rect to Rust whenever collapsed into edge Pill/Notch/Orb/Handle
   useEffect(() => {
     const isTauri = !!(window as any).__TAURI_INTERNALS__;
     if (!isTauri) return;
@@ -252,9 +261,12 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
       return;
     }
 
-    const peekW = 46;
-    const peekH = 112;
-    const sidePad = barStyle === "island" && isSideDocked ? 10 : 0;
+    const isOrb = barStyle === "orb";
+    const isHandle = barStyle === "handle";
+    const isFlush = barStyle === "notch" || isHandle;
+    const peekW = isOrb ? 48 : isHandle ? 10 : 46;
+    const peekH = isOrb ? 48 : isHandle ? 90 : 112;
+    const sidePad = !isFlush && isSideDocked ? 10 : 0;
     const x =
       lyricsDockEdge === "left"
         ? sidePad
@@ -643,14 +655,25 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
     ? "text-zinc-600 hover:text-zinc-950"
     : "text-zinc-400 hover:text-white";
 
-  const isNotchEdge = barStyle === "notch" && isSideDocked;
-  const isFloatingSide = barStyle === "island" && isSideDocked;
+  const isOrbStyle = barStyle === "orb";
+  const isHandleStyle = barStyle === "handle";
+  const isFlushStyle = barStyle === "notch" || isHandleStyle;
+  const isNotchEdge = isFlushStyle && isSideDocked;
+  const isFloatingSide = !isFlushStyle && isSideDocked;
   const shellRadiusCls = isCollapsed
-    ? isNotchEdge
-      ? lyricsDockEdge === "right"
-        ? "rounded-l-[18px] rounded-r-none border-r-0"
-        : "rounded-r-[18px] rounded-l-none border-l-0"
-      : "rounded-[23px]"
+    ? isOrbStyle
+      ? "rounded-[24px]"
+      : isHandleStyle
+        ? lyricsDockEdge === "right"
+          ? "rounded-l-[6px] rounded-r-none border-r-0"
+          : "rounded-r-[6px] rounded-l-none border-l-0"
+        : isNotchEdge
+          ? lyricsDockEdge === "right"
+            ? "rounded-l-[18px] rounded-r-none border-r-0"
+            : "rounded-r-[18px] rounded-l-none border-l-0"
+          : barStyle === "tile"
+            ? "rounded-[22px]"
+            : "rounded-[23px]"
     : isAcrylic
       ? "rounded-lg"
       : isNotchEdge
@@ -683,8 +706,10 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
     : Math.max(260, winSize.w - freeEdgePad - sideInsetPx);
   const expandedH = isAcrylic ? winSize.h : Math.max(280, winSize.h - freeEdgePad * 2);
 
-  const shellW = isCollapsed ? 46 : expandedW;
-  const shellH = isCollapsed ? 112 : expandedH;
+  const collapsedW = isOrbStyle ? 48 : isHandleStyle ? 10 : 46;
+  const collapsedH = isOrbStyle ? 48 : isHandleStyle ? 90 : 112;
+  const shellW = isCollapsed ? collapsedW : expandedW;
+  const shellH = isCollapsed ? collapsedH : expandedH;
 
   const outerPadCls = isAcrylic
     ? ""
@@ -726,43 +751,94 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
         }`}
       >
         {isCollapsed ? (
-          /* Collapsed Twin Pill/Notch Content (46x112px — identical width & rhythm to Side Island!) */
-          <div
-            onClick={() => setIsPeekHovered(true)}
-            onMouseDown={(e) => {
-              if (e.button !== 0) return;
-              onStartDrag();
-            }}
-            title={
-              displayedTitle !== "Full Lyrics"
-                ? `Hover for lyrics · ${displayedTitle}`
-                : "Hover for lyrics"
-            }
-            className="w-full h-full flex flex-col items-center justify-between py-2.5 px-1 cursor-pointer island-panel-fade"
-          >
-            <span
-              className={`w-1.5 h-1.5 rounded-full ${
-                media.isPlaying ? "bg-accent" : isLight ? "bg-zinc-400" : "bg-zinc-600"
-              }`}
-            />
-
-            <div className="flex flex-col items-center gap-1">
+          isOrbStyle ? (
+            /* Collapsed Floating Orb Lyrics (48x48px circle matching MS Island Orb) */
+            <div
+              onClick={() => setIsPeekHovered(true)}
+              onMouseDown={(e) => {
+                if (e.button !== 0) return;
+                onStartDrag();
+              }}
+              title={
+                displayedTitle !== "Full Lyrics"
+                  ? `Hover for lyrics · ${displayedTitle}`
+                  : "Hover for lyrics"
+              }
+              className="relative w-full h-full flex flex-col items-center justify-center gap-0.5 cursor-pointer island-panel-fade"
+            >
               <FileText className="w-4 h-4 text-accent" />
               <span
-                className={`text-[8px] font-bold uppercase tracking-wider leading-none ${
+                className={`text-[7.5px] font-bold uppercase tracking-wider leading-none ${
                   isLight ? "text-zinc-600" : "text-zinc-400"
                 }`}
               >
                 {hasSynced ? "SYNC" : "LYR"}
               </span>
             </div>
+          ) : isHandleStyle ? (
+            /* Collapsed Ultra-Slim Edge Handle Lyrics (10x90px matching MS Island Handle) */
+            <div
+              onClick={() => setIsPeekHovered(true)}
+              onMouseDown={(e) => {
+                if (e.button !== 0) return;
+                onStartDrag();
+              }}
+              title={
+                displayedTitle !== "Full Lyrics"
+                  ? `Hover for lyrics · ${displayedTitle}`
+                  : "Hover for lyrics"
+              }
+              className="w-full h-full flex items-center justify-center cursor-pointer island-panel-fade"
+            >
+              <div
+                className={`w-[3px] h-[44px] rounded-full ${
+                  media.isPlaying || hasSynced
+                    ? "bg-accent"
+                    : isLight
+                      ? "bg-zinc-400"
+                      : "bg-zinc-500"
+                }`}
+              />
+            </div>
+          ) : (
+            /* Collapsed Twin Pill/Notch Content (46x112px — identical width & rhythm to Side Island!) */
+            <div
+              onClick={() => setIsPeekHovered(true)}
+              onMouseDown={(e) => {
+                if (e.button !== 0) return;
+                onStartDrag();
+              }}
+              title={
+                displayedTitle !== "Full Lyrics"
+                  ? `Hover for lyrics · ${displayedTitle}`
+                  : "Hover for lyrics"
+              }
+              className="w-full h-full flex flex-col items-center justify-between py-2.5 px-1 cursor-pointer island-panel-fade"
+            >
+              <span
+                className={`w-1.5 h-1.5 rounded-full ${
+                  media.isPlaying ? "bg-accent" : isLight ? "bg-zinc-400" : "bg-zinc-600"
+                }`}
+              />
 
-            {lyricsDockEdge === "left" ? (
-              <ChevronRight className="w-3 h-3 text-zinc-500" />
-            ) : (
-              <ChevronLeft className="w-3 h-3 text-zinc-500" />
-            )}
-          </div>
+              <div className="flex flex-col items-center gap-1">
+                <FileText className="w-4 h-4 text-accent" />
+                <span
+                  className={`text-[8px] font-bold uppercase tracking-wider leading-none ${
+                    isLight ? "text-zinc-600" : "text-zinc-400"
+                  }`}
+                >
+                  {hasSynced ? "SYNC" : "LYR"}
+                </span>
+              </div>
+
+              {lyricsDockEdge === "left" ? (
+                <ChevronRight className="w-3 h-3 text-zinc-500" />
+              ) : (
+                <ChevronLeft className="w-3 h-3 text-zinc-500" />
+              )}
+            </div>
+          )
         ) : (
           /* Expanded Full Lyrics Content */
           <div className="w-full h-full flex flex-col min-w-0 min-h-0 island-panel-fade">

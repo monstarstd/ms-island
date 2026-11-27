@@ -224,6 +224,7 @@ fn arrange_docked_windows_ex(app: &AppHandle, state: &AppState, animate: bool) {
 
     let island_edge = lock_safe(&state.island_dock_edge).clone();
     let mut lyrics_edge = lock_safe(&state.lyrics_dock_edge).clone();
+    let universal_style = lock_safe(&state.bar_style).clone();
     let focus = if state.island_side_hovered.load(Ordering::Relaxed) {
         "island"
     } else if state.lyrics_side_hovered.load(Ordering::Relaxed) {
@@ -288,9 +289,20 @@ fn arrange_docked_windows_ex(app: &AppHandle, state: &AppState, animate: bool) {
     let same_side = (island_edge == "right" || island_edge == "left") && lyrics_edge == island_edge;
 
     if same_side && lyrics_visible {
-        let island_idle_h = (160.0 * scale).round() as i32;
+        let island_idle_h_logical = match universal_style.as_str() {
+            "orb" => 48.0,
+            "handle" => 110.0,
+            "tile" => 156.0,
+            _ => 160.0,
+        };
+        let lyrics_peek_h_logical = match universal_style.as_str() {
+            "orb" => 48.0,
+            "handle" => 90.0,
+            _ => 112.0,
+        };
+        let island_idle_h = (island_idle_h_logical * scale).round() as i32;
         let island_exp_h = (262.0 * scale).round() as i32;
-        let lyrics_peek_h = (112.0 * scale).round() as i32;
+        let lyrics_peek_h = (lyrics_peek_h_logical * scale).round() as i32;
         let peek_offset_in_win = ((lyrics_h - lyrics_peek_h) / 2).max(0);
 
         let ix = if island_edge == "right" {
@@ -928,7 +940,13 @@ fn dock_island_to_edge(app: AppHandle, state: State<AppState>, edge: String) {
 
 #[tauri::command]
 fn set_bar_style(app: AppHandle, state: State<AppState>, style: String) {
-    let normalized = if style == "island" { "island" } else { "notch" };
+    let normalized = match style.as_str() {
+        "island" => "island",
+        "orb" => "orb",
+        "handle" => "handle",
+        "tile" => "tile",
+        _ => "notch",
+    };
     *lock_safe(&state.bar_style) = normalized.to_string();
     let _ = app.emit("bar-style-changed", normalized);
     arrange_docked_windows(&app, &state);

@@ -2,12 +2,17 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
+  ArrowDownToLine,
+  Circle,
   Clock,
   CloudSun,
   Cpu,
+  Flame,
   GripHorizontal,
   Hourglass,
   Inbox,
+  LayoutGrid,
+  Minus,
   Moon,
   Music,
   PanelTop,
@@ -22,6 +27,7 @@ import { ThemeMode } from "../types/theme";
 import {
   ActiveDownloadInfo,
   AudioDeviceInfo,
+  BarStyle,
   BatteryInfo,
   ClipboardEntry,
   ClipboardSyncPayload,
@@ -40,6 +46,7 @@ import {
   formatAmPmTime,
   formatBytes,
   formatSpeed,
+  formatTime,
   getIslandThemeTokens,
   playSoftChime,
   unlockAudioContext,
@@ -89,6 +96,20 @@ const TABS: { id: TabType; label: string; icon: React.ComponentType<{ className?
   { id: "system", label: "System", icon: Cpu },
 ];
 
+const BAR_STYLE_ORDER: BarStyle[] = ["notch", "island", "orb", "handle", "tile"];
+const BAR_STYLE_LABELS: Record<BarStyle, string> = {
+  notch: "Edge Notch",
+  island: "Floating Pill",
+  orb: "Floating Orb",
+  handle: "Edge Handle",
+  tile: "Desk Tile",
+};
+
+function parseBarStyle(val: string | null): BarStyle {
+  if (val === "island" || val === "orb" || val === "handle" || val === "tile") return val;
+  return "notch";
+}
+
 export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   media,
   isLyricsOpen,
@@ -105,10 +126,9 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   const [activeTab, setActiveTab] = useState<TabType>("music");
   const [dockEdge, setDockEdge] = useState<DockPosition>("top");
   const [isSideStacked, setIsSideStacked] = useState(false);
-  const [barStyle, setBarStyle] = useState<"notch" | "island">(() => {
-    const saved = localStorage.getItem("ms-island-bar-style");
-    return saved === "island" ? "island" : "notch";
-  });
+  const [barStyle, setBarStyle] = useState<BarStyle>(() =>
+    parseBarStyle(localStorage.getItem("ms-island-bar-style"))
+  );
   const [isMoving, setIsMoving] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const hoverTimeoutRef = useRef<number | null>(null);
@@ -1007,8 +1027,8 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
     hoverEnterTimeoutRef.current = null;
     hoverTimeoutRef.current = null;
-    const x = Math.max(8, Math.min(window.innerWidth - 208, e.clientX));
-    const y = Math.max(8, Math.min(window.innerHeight - 266, e.clientY + 6));
+    const x = Math.max(8, Math.min(window.innerWidth - 220, e.clientX));
+    const y = Math.max(4, Math.min(window.innerHeight - 272, e.clientY + 6));
     setContextMenu({ x, y });
   };
 
@@ -1038,21 +1058,23 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     [isTauri, showToast]
   );
 
-  const handleToggleBarStyle = useCallback(() => {
-    setBarStyle((prev) => {
-      const next = prev === "notch" ? "island" : "notch";
+  const handleSetBarStyle = useCallback(
+    (next: BarStyle) => {
+      setBarStyle(next);
       localStorage.setItem("ms-island-bar-style", next);
       if (isTauri) {
         invoke("set_bar_style", { style: next }).catch(() => {});
       }
-      showToast(
-        "refresh",
-        next === "island" ? "Floating Pill Style" : "Edge Notch Style",
-        1700
-      );
-      return next;
-    });
-  }, [isTauri, showToast]);
+      showToast("refresh", `${BAR_STYLE_LABELS[next]} Style`, 1600);
+    },
+    [isTauri, showToast]
+  );
+
+  const handleCycleBarStyle = useCallback(() => {
+    const idx = BAR_STYLE_ORDER.indexOf(barStyle);
+    const next = BAR_STYLE_ORDER[(idx + 1) % BAR_STYLE_ORDER.length];
+    handleSetBarStyle(next);
+  }, [barStyle, handleSetBarStyle]);
 
   const handleRefreshIsland = useCallback(async () => {
     setContextMenu(null);
@@ -1076,10 +1098,10 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     }
   }, [isTauri]);
 
-  // 13. Snappy Physical Pill Hover Handlers (45ms open, 75ms close)
+  // 13. Snappy Physical Pill Hover Handlers (45ms open, 75ms close; Tile expands on click so direct buttons stay steady)
   const handleMouseEnter = () => {
     mouseInsideRef.current = true;
-    if (contextMenu || isPickingColor) return;
+    if (contextMenu || isPickingColor || (barStyle === "tile" && !isHovered)) return;
     if (hoverTimeoutRef.current) {
       clearTimeout(hoverTimeoutRef.current);
       hoverTimeoutRef.current = null;
@@ -1134,11 +1156,40 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
 
   const isSideDock = dockEdge === "left" || dockEdge === "right";
   const isBottomCorner = dockEdge === "bottom-left" || dockEdge === "bottom-right";
-  const isIslandStyle = barStyle === "island";
-  const isDetachedPill = dockEdge === "floating" || isIslandStyle;
+  const isEffectiveOrb = barStyle === "orb" && !isPickingColor && !isDragOver;
+  const isEffectiveHandle =
+    barStyle === "handle" && !isPickingColor && !isDragOver && !showVolumeHud;
+  const isEffectiveTile = barStyle === "tile";
+  const isFlushEdgeStyle = barStyle === "notch" || barStyle === "handle";
+  const isFloatingEdgeStyle = !isFlushEdgeStyle;
+  const isDetachedPill = dockEdge === "floating" || isFloatingEdgeStyle;
 
-  // Constant side capsule height so idle weather & music playing never jump or crowd the sibling pill
-  const sideIdleHeightPx = 160;
+  // Auto-Split Twin-Island in Pill mode when Music + Pomodoro/Timer/Stopwatch/Download run simultaneously!
+  const hasSecondaryActivity = Boolean(
+    activeDownload || isTimerRunning || isTimerFinished || isStopwatchRunning
+  );
+  const isSplitTwin =
+    !isHovered &&
+    barStyle === "island" &&
+    !isSideDock &&
+    media.isPlaying &&
+    hasSecondaryActivity &&
+    !isPickingColor &&
+    !isDragOver &&
+    !showVolumeHud &&
+    !toast;
+
+  const splitMainWidthPx = Math.min(372, Math.max(276, Math.round(212 + (media.title || "Audio").length * 5.8)));
+  const splitSecondaryWidthPx = activeDownload ? 116 : isTimerRunning || isTimerFinished ? 114 : 96;
+
+  // Side capsule height synced with Rust arrange_docked_windows_ex
+  const sideIdleHeightPx = isEffectiveOrb
+    ? 48
+    : isEffectiveHandle
+      ? 110
+      : isEffectiveTile
+        ? 156
+        : 160;
 
   const sideVertAlign = isSideStacked ? "items-start pt-[10px]" : "items-center";
 
@@ -1155,79 +1206,117 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
 
   const outerAlignCls =
     dockEdge === "left"
-      ? isIslandStyle
+      ? isFloatingEdgeStyle
         ? `justify-start ${sideVertAlign} pl-[10px]`
         : `justify-start ${sideVertAlign} pl-0`
       : dockEdge === "right"
-        ? isIslandStyle
+        ? isFloatingEdgeStyle
           ? `justify-end ${sideVertAlign} pr-[10px]`
           : `justify-end ${sideVertAlign} pr-0`
         : dockEdge === "bottom-left"
-          ? isIslandStyle
+          ? isFloatingEdgeStyle
             ? "justify-start items-end pl-[10px] pb-[10px]"
             : "justify-start items-end pl-[10px] pb-0"
           : dockEdge === "bottom-right"
-            ? isIslandStyle
+            ? isFloatingEdgeStyle
               ? "justify-end items-end pr-[10px] pb-[10px]"
               : "justify-end items-end pr-[10px] pb-0"
             : dockEdge === "floating"
               ? "justify-center items-start pt-2"
-              : isIslandStyle
+              : isFloatingEdgeStyle
                 ? "justify-center items-start pt-[10px]"
                 : "justify-center items-start pt-0";
 
   const shellShapeCls = (() => {
     if (isHovered) {
-      if (dockEdge === "top" && !isIslandStyle) {
+      if (dockEdge === "top" && isFlushEdgeStyle) {
         return "rounded-t-none rounded-b-[22px] border-t-0 p-3.5";
       }
-      if (isBottomCorner && !isIslandStyle) {
+      if (isBottomCorner && isFlushEdgeStyle) {
         return "rounded-b-none rounded-t-[22px] border-b-0 p-3.5";
       }
-      if (dockEdge === "left" && !isIslandStyle) {
+      if (dockEdge === "left" && isFlushEdgeStyle) {
         return "rounded-l-none rounded-r-[22px] border-l-0 p-3.5";
       }
-      if (dockEdge === "right" && !isIslandStyle) {
+      if (dockEdge === "right" && isFlushEdgeStyle) {
         return "rounded-r-none rounded-l-[22px] border-r-0 p-3.5";
       }
       return "rounded-[22px] p-3.5";
     }
-    if (dockEdge === "top" && !isIslandStyle) {
+    if (isEffectiveOrb) {
+      return "rounded-[24px] cursor-pointer";
+    }
+    if (isEffectiveHandle) {
+      if (dockEdge === "left") return "rounded-l-none rounded-r-[6px] border-l-0 cursor-pointer";
+      if (dockEdge === "right") return "rounded-r-none rounded-l-[6px] border-r-0 cursor-pointer";
+      if (dockEdge === "top") return "rounded-t-none rounded-b-[6px] border-t-0 cursor-pointer";
+      if (isBottomCorner) return "rounded-b-none rounded-t-[6px] border-b-0 cursor-pointer";
+      return "rounded-[6px] cursor-pointer";
+    }
+    if (isEffectiveTile) {
+      return "rounded-[22px]";
+    }
+    if (dockEdge === "top" && isFlushEdgeStyle) {
       return "rounded-t-none rounded-b-[16px] border-t-0 px-3.5 py-1.5 cursor-pointer";
     }
-    if (isBottomCorner && !isIslandStyle) {
+    if (isBottomCorner && isFlushEdgeStyle) {
       return "rounded-b-none rounded-t-[16px] border-b-0 px-3.5 py-1.5 cursor-pointer";
     }
     if (dockEdge === "left") {
-      return isIslandStyle
+      return isFloatingEdgeStyle
         ? "rounded-[23px] cursor-pointer"
         : "rounded-l-none rounded-r-[18px] border-l-0 cursor-pointer";
     }
     if (dockEdge === "right") {
-      return isIslandStyle
+      return isFloatingEdgeStyle
         ? "rounded-[23px] cursor-pointer"
         : "rounded-r-none rounded-l-[18px] border-r-0 cursor-pointer";
     }
     return "rounded-[19px] px-4 py-1.5 cursor-pointer";
   })();
 
-  const shellWidthPx = isHovered ? 516 : isSideDock ? 46 : idleWidthPx;
+  const shellWidthPx = isHovered
+    ? 516
+    : isEffectiveOrb
+      ? 48
+      : isEffectiveHandle
+        ? isSideDock
+          ? 10
+          : 110
+        : isEffectiveTile
+          ? 156
+          : isSplitTwin
+            ? splitMainWidthPx
+            : isSideDock
+              ? 46
+              : idleWidthPx;
+
   const shellHeightPx = isHovered
     ? 262
-    : isSideDock
-      ? sideIdleHeightPx
-      : isDetachedPill
-        ? 38
-        : 36;
+    : isEffectiveOrb
+      ? 48
+      : isEffectiveHandle
+        ? isSideDock
+          ? 110
+          : 10
+        : isEffectiveTile
+          ? 156
+          : isSideDock
+            ? sideIdleHeightPx
+            : isDetachedPill
+              ? 38
+              : 36;
+
+  const hitWidthPx = isSplitTwin ? splitMainWidthPx + 8 + splitSecondaryWidthPx : shellWidthPx;
 
   // 15. Sync Exact Interactive Bounds to Rust (pad = 0 when idle so transparent gaps stay 100% click-through)
   useEffect(() => {
     if (!isTauri) return;
-    const width = shellWidthPx;
+    const width = hitWidthPx;
     const height = shellHeightPx;
     const winW = window.innerWidth || 560;
     const winH = window.innerHeight || 286;
-    const sideOffset = isIslandStyle ? 10 : 0;
+    const sideOffset = isFloatingEdgeStyle ? 10 : 0;
     const x =
       dockEdge === "left"
         ? sideOffset
@@ -1243,9 +1332,9 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
         ? 10
         : Math.max(0, (winH - height) / 2)
       : isBottomCorner
-        ? Math.max(0, winH - height - (isIslandStyle ? 10 : 0))
+        ? Math.max(0, winH - height - (isFloatingEdgeStyle ? 10 : 0))
         : dockEdge === "top"
-          ? isIslandStyle
+          ? isFloatingEdgeStyle
             ? 10
             : 0
           : 8;
@@ -1261,10 +1350,10 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   }, [
     isTauri,
     isHovered,
-    shellWidthPx,
+    hitWidthPx,
     shellHeightPx,
     dockEdge,
-    isIslandStyle,
+    isFloatingEdgeStyle,
     isSideDock,
     isBottomCorner,
     isSideStacked,
@@ -1279,70 +1368,88 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     media.durationSec > 0 &&
     !isDragOver &&
     !showVolumeHud &&
-    !activeDownload
+    !activeDownload &&
+    !isPickingColor
       ? Math.max(0, Math.min(1, media.positionSec / media.durationSec))
       : null;
 
+  const idleTimerProgress =
+    !isHovered && isTimerRunning && timerDuration > 0
+      ? Math.max(0, Math.min(1, (timerDuration - timerRemaining) / timerDuration))
+      : null;
+
+  const showEdgeProgressLine =
+    idleMediaProgress !== null && !isEffectiveOrb && !isEffectiveHandle && !isEffectiveTile;
+
   return (
     <div className={`relative w-full h-full flex ${outerAlignCls}`}>
-      <div
-        onMouseEnter={handleMouseEnter}
-        onMouseLeave={handleMouseLeave}
-        onWheel={handleWheelVolume}
-        onContextMenu={handleContextMenu}
-        style={{ width: `${shellWidthPx}px`, height: `${shellHeightPx}px` }}
-        className={`relative island-shell-spring overflow-hidden border ${tokens.shellSurface} ${shellShapeCls} ${
-          isMoving ? "scale-[1.014]" : "scale-100"
-        } ${isDragOver ? "border-accent ring-1 ring-accent" : ""}`}
-      >
-        {idleMediaProgress !== null && !isSideDock && (
-          <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-[1.5px] bg-transparent z-10">
+      <div className={isSplitTwin ? "flex items-center gap-2" : "flex items-center"}>
+        <div
+          onMouseEnter={handleMouseEnter}
+          onMouseLeave={handleMouseLeave}
+          onWheel={handleWheelVolume}
+          onContextMenu={handleContextMenu}
+          style={{ width: `${shellWidthPx}px`, height: `${shellHeightPx}px` }}
+          className={`relative island-shell-spring overflow-hidden border ${tokens.shellSurface} ${shellShapeCls} ${
+            isMoving ? "scale-[1.014]" : "scale-100"
+          } ${isDragOver ? "border-accent ring-1 ring-accent" : ""}`}
+        >
+          {showEdgeProgressLine && !isSideDock && (
+            <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-[1.5px] bg-transparent z-10">
+              <div
+                className="h-full w-full bg-accent origin-left transition-transform duration-300 ease-linear"
+                style={{ transform: `scaleX(${idleMediaProgress!.toFixed(4)})` }}
+              />
+            </div>
+          )}
+          {showEdgeProgressLine && isSideDock && (
             <div
-              className="h-full w-full bg-accent origin-left transition-transform duration-300 ease-linear"
-              style={{ transform: `scaleX(${idleMediaProgress.toFixed(4)})` }}
+              className={`pointer-events-none absolute ${
+                isFloatingEdgeStyle ? "top-5 bottom-5" : "top-3 bottom-3"
+              } w-[2px] bg-transparent z-10 ${dockEdge === "left" ? "right-0" : "left-0"}`}
+            >
+              <div
+                className="w-full h-full bg-accent origin-bottom transition-transform duration-300 ease-linear rounded-full"
+                style={{ transform: `scaleY(${idleMediaProgress!.toFixed(4)})` }}
+              />
+            </div>
+          )}
+          {!isHovered ? (
+            <IdleBar
+              tokens={tokens}
+              barStyle={barStyle}
+              idleClockAmPm={idleClockAmPm}
+              currentTime={currentTime}
+              media={media}
+              mediaProgress={idleMediaProgress}
+              timerProgress={idleTimerProgress}
+              visualizerStyle={visualizerStyle}
+              isLyricsOpen={isLyricsOpen}
+              isDragOver={isDragOver}
+              showVolumeHud={showVolumeHud}
+              volume={volume}
+              toast={toast}
+              activeDownload={activeDownload}
+              isTimerRunning={isTimerRunning}
+              isTimerFinished={isTimerFinished}
+              timerRemaining={timerRemaining}
+              timerMode={timerMode}
+              pomodoroPhase={pomodoroPhase}
+              isPickingColor={isPickingColor}
+              pickedSample={pickedSample}
+              isStopwatchRunning={isStopwatchRunning}
+              stopwatchTimeMs={stopwatchTimeMs}
+              weather={weather}
+              vertical={isSideDock}
+              forceMusicSlot={isSplitTwin}
+              onToggleLyricsWindow={onToggleLyricsWindow}
+              onTogglePlayPause={onTogglePlayPause}
+              onPrev={onPrev}
+              onNext={onNext}
+              onExpandTile={() => setIsHovered(true)}
+              onStartDrag={onStartDrag}
             />
-          </div>
-        )}
-        {idleMediaProgress !== null && isSideDock && (
-          <div
-            className={`pointer-events-none absolute ${
-              isIslandStyle ? "top-5 bottom-5" : "top-3 bottom-3"
-            } w-[2px] bg-transparent z-10 ${dockEdge === "left" ? "right-0" : "left-0"}`}
-          >
-            <div
-              className="w-full h-full bg-accent origin-bottom transition-transform duration-300 ease-linear rounded-full"
-              style={{ transform: `scaleY(${idleMediaProgress.toFixed(4)})` }}
-            />
-          </div>
-        )}
-        {!isHovered ? (
-          <IdleBar
-            tokens={tokens}
-            idleClockAmPm={idleClockAmPm}
-            currentTime={currentTime}
-            media={media}
-            visualizerStyle={visualizerStyle}
-            isLyricsOpen={isLyricsOpen}
-            isDragOver={isDragOver}
-            showVolumeHud={showVolumeHud}
-            volume={volume}
-            toast={toast}
-            activeDownload={activeDownload}
-            isTimerRunning={isTimerRunning}
-            isTimerFinished={isTimerFinished}
-            timerRemaining={timerRemaining}
-            timerMode={timerMode}
-            pomodoroPhase={pomodoroPhase}
-            isPickingColor={isPickingColor}
-            pickedSample={pickedSample}
-            isStopwatchRunning={isStopwatchRunning}
-            stopwatchTimeMs={stopwatchTimeMs}
-            weather={weather}
-            vertical={isSideDock}
-            onToggleLyricsWindow={onToggleLyricsWindow}
-            onStartDrag={onStartDrag}
-          />
-        ) : (
+          ) : (
           <div className="w-[486px] h-[232px] mx-auto grid grid-rows-[auto_1fr] gap-2 select-none island-panel-fade">
             {/* Navigation Bar */}
             <div
@@ -1399,22 +1506,24 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
                 </button>
 
                 <button
-                  onClick={handleToggleBarStyle}
+                  onClick={handleCycleBarStyle}
                   className={`h-7 w-7 flex items-center justify-center rounded-lg border transition-all ${tokens.focusRing} ${
                     isLight
                       ? "bg-zinc-200/80 border-zinc-300 text-zinc-800 hover:bg-zinc-300 active:scale-[0.95]"
                       : "bg-[#141418] border-zinc-800 text-zinc-300 hover:text-white hover:bg-zinc-800 active:scale-[0.95]"
                   }`}
-                  title={
-                    barStyle === "notch"
-                      ? "Idle Style: Top Notch (Click for Floating Island)"
-                      : "Idle Style: Floating Island (Click for Top Notch)"
-                  }
+                  title={`Style: ${BAR_STYLE_LABELS[barStyle]} (Click to cycle)`}
                 >
                   {barStyle === "notch" ? (
-                    <RectangleHorizontal className="w-3.5 h-3.5" />
+                    <PanelTop className="w-3.5 h-3.5" />
+                  ) : barStyle === "island" ? (
+                    <RectangleHorizontal className="w-3.5 h-3.5 text-accent" />
+                  ) : barStyle === "orb" ? (
+                    <Circle className="w-3.5 h-3.5 text-accent" />
+                  ) : barStyle === "handle" ? (
+                    <Minus className="w-3.5 h-3.5 text-accent" />
                   ) : (
-                    <PanelTop className="w-3.5 h-3.5 text-accent" />
+                    <LayoutGrid className="w-3.5 h-3.5 text-accent" />
                   )}
                 </button>
 
@@ -1569,6 +1678,50 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
             </div>
           </div>
         )}
+        </div>
+
+        {/* Auto-Split Secondary Pill (appears automatically in Pill mode when Music + Timer/Pomodoro/Stopwatch/Download run together!) */}
+        {isSplitTwin && (
+          <div
+            onMouseEnter={handleMouseEnter}
+            onMouseLeave={handleMouseLeave}
+            onContextMenu={handleContextMenu}
+            style={{ width: `${splitSecondaryWidthPx}px`, height: "38px" }}
+            className={`island-shell-spring island-panel-fade flex items-center justify-center gap-1.5 px-2.5 rounded-[19px] border cursor-pointer select-none ${tokens.shellSurface}`}
+            title="Live Secondary Activity · Hover to open"
+          >
+            {activeDownload ? (
+              <>
+                <ArrowDownToLine className="w-3.5 h-3.5 text-accent flex-shrink-0" />
+                <span className="text-[10.5px] font-mono font-semibold tabular-nums text-accent truncate">
+                  {formatSpeed(activeDownload.speedBytesPerSec)}
+                </span>
+              </>
+            ) : isTimerRunning || isTimerFinished ? (
+              <>
+                {timerMode === "pomodoro" ? (
+                  <Flame className="w-3.5 h-3.5 text-accent flex-shrink-0" />
+                ) : (
+                  <Hourglass className="w-3.5 h-3.5 text-accent flex-shrink-0" />
+                )}
+                <span className="text-[10.5px] font-mono font-semibold tabular-nums truncate">
+                  {isTimerFinished
+                    ? "Done"
+                    : timerMode === "pomodoro"
+                      ? `${pomodoroPhase === "focus" ? "Focus" : "Break"} ${formatTime(timerRemaining)}`
+                      : formatTime(timerRemaining)}
+                </span>
+              </>
+            ) : (
+              <>
+                <TimerIcon className="w-3.5 h-3.5 text-accent flex-shrink-0" />
+                <span className="text-[10.5px] font-mono font-semibold tabular-nums truncate">
+                  {formatTime(Math.floor(stopwatchTimeMs / 1000))}
+                </span>
+              </>
+            )}
+          </div>
+        )}
       </div>
 
       {contextMenu && (
@@ -1582,7 +1735,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
           onRefresh={handleRefreshIsland}
           onDockToEdge={handleDockToEdge}
           onStartColorPicker={handleStartColorPicker}
-          onToggleBarStyle={handleToggleBarStyle}
+          onSetBarStyle={handleSetBarStyle}
           onToggleLyrics={onToggleLyricsWindow}
           onToggleTheme={onToggleTheme}
           onQuit={handleQuitApp}
