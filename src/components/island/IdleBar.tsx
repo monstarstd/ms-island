@@ -3,7 +3,9 @@ import { ArrowDownToLine, FileText, Hourglass, Inbox, Music, Timer as TimerIcon 
 import { MediaTrack } from "../../types/media";
 import {
   ActiveDownloadInfo,
+  ColorSample,
   IslandToast,
+  PomodoroPhase,
   VisualizerStyle,
   VolumeInfo,
   WeatherInfo,
@@ -34,6 +36,10 @@ interface IdleBarProps {
   isTimerRunning: boolean;
   isTimerFinished: boolean;
   timerRemaining: number;
+  timerMode: "countdown" | "pomodoro";
+  pomodoroPhase: PomodoroPhase;
+  isPickingColor: boolean;
+  pickedSample: ColorSample | null;
   isStopwatchRunning: boolean;
   stopwatchTimeMs: number;
   weather: WeatherInfo | null;
@@ -58,6 +64,10 @@ export const IdleBar: React.FC<IdleBarProps> = React.memo(
     isTimerRunning,
     isTimerFinished,
     timerRemaining,
+    timerMode,
+    pomodoroPhase,
+    isPickingColor,
+    pickedSample,
     isStopwatchRunning,
     stopwatchTimeMs,
     weather,
@@ -99,7 +109,17 @@ export const IdleBar: React.FC<IdleBarProps> = React.memo(
 
           {/* Middle: Upright Context-Aware Live Slot */}
           <div className="w-full flex flex-col items-center justify-center gap-1 min-h-[42px]">
-            {isDragOver ? (
+            {isPickingColor ? (
+              <>
+                <span
+                  className="w-5 h-5 rounded-md border border-white/25 shadow-sm"
+                  style={{ backgroundColor: pickedSample?.hex || "#f97316" }}
+                />
+                <span className="text-[7.5px] font-mono font-bold tracking-tight leading-none">
+                  {pickedSample?.hex ? pickedSample.hex.slice(1) : "PICK"}
+                </span>
+              </>
+            ) : isDragOver ? (
               <>
                 <Inbox className="w-4 h-4 text-accent" />
                 <span className="text-[8px] font-semibold text-accent uppercase tracking-wider">
@@ -241,7 +261,20 @@ export const IdleBar: React.FC<IdleBarProps> = React.memo(
             isLight ? "border-zinc-300" : "border-zinc-800"
           }`}
         >
-          {isDragOver ? (
+          {isPickingColor ? (
+            <div className="flex items-center gap-2 min-w-0 text-[11px]">
+              <span
+                className="w-3.5 h-3.5 rounded-[4px] border border-white/25 flex-shrink-0"
+                style={{ backgroundColor: pickedSample?.hex || "#f97316" }}
+              />
+              <span className="font-mono font-bold tabular-nums">
+                {pickedSample?.hex || "Move cursor..."}
+              </span>
+              <span className={`text-[10px] truncate ${mutedText}`}>
+                Click to copy · Esc
+              </span>
+            </div>
+          ) : isDragOver ? (
             <div className="flex items-center gap-1.5 text-[11px] font-medium text-accent">
               <Inbox className="w-3.5 h-3.5 flex-shrink-0" />
               <span className="truncate">Drop files to save on Shelf</span>
@@ -289,7 +322,15 @@ export const IdleBar: React.FC<IdleBarProps> = React.memo(
                   isTimerFinished ? "text-accent font-semibold" : ""
                 }`}
               >
-                {isTimerFinished ? "Timer Finished" : formatTime(timerRemaining)}
+                {isTimerFinished
+                  ? timerMode === "pomodoro"
+                    ? pomodoroPhase === "focus"
+                      ? "Focus Complete"
+                      : "Break Over"
+                    : "Timer Finished"
+                  : timerMode === "pomodoro"
+                    ? `${pomodoroPhase === "focus" ? "Focus" : "Break"} ${formatTime(timerRemaining)}`
+                    : formatTime(timerRemaining)}
               </span>
             </div>
           ) : isStopwatchRunning ? (

@@ -79,6 +79,7 @@ struct AppState {
     lyrics_auto_peek: Arc<AtomicBool>,
     stack_anim_seq: Arc<AtomicU64>,
     lyrics_snapping: Arc<AtomicBool>,
+    picker_active: Arc<AtomicBool>,
     wifi_share: Arc<wifi_share::WifiShareManager>,
 }
 
@@ -962,6 +963,104 @@ fn set_side_stack_focus(app: AppHandle, state: State<AppState>, source: String, 
     }
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct ColorSamplePayload {
+    hex: String,
+    r: u8,
+    g: u8,
+    b: u8,
+    cancelled: bool,
+}
+
+#[tauri::command]
+fn start_color_picker(app: AppHandle, state: State<AppState>) {
+    if state.picker_active.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let active_flag = state.picker_active.clone();
+    std::thread::spawn(move || {
+        const VK_LBUTTON: i32 = 0x01;
+        const VK_RBUTTON: i32 = 0x02;
+        const VK_ESCAPE: i32 = 0x1B;
+
+        // Wait briefly for the initial trigger click to be released
+        let mut wait_ms = 0u32;
+        while system_tools::is_virtual_key_down(VK_LBUTTON) && wait_ms < 600 {
+            std::thread::sleep(Duration::from_millis(20));
+            wait_ms += 20;
+        }
+        std::thread::sleep(Duration::from_millis(60));
+
+        let mut last_rgb: Option<(u8, u8, u8)> = None;
+
+        while active_flag.load(Ordering::SeqCst) {
+            if system_tools::is_virtual_key_down(VK_ESCAPE)
+                || system_tools::is_virtual_key_down(VK_RBUTTON)
+            {
+                active_flag.store(false, Ordering::SeqCst);
+                let _ = app.emit(
+                    "color-picker-done",
+                    ColorSamplePayload {
+                        hex: String::new(),
+                        r: 0,
+                        g: 0,
+                        b: 0,
+                        cancelled: true,
+                    },
+                );
+                return;
+            }
+
+            if let Some((r, g, b)) = system_tools::sample_cursor_pixel_rgb() {
+                let hex = format!("#{:02X}{:02X}{:02X}", r, g, b);
+                if last_rgb != Some((r, g, b)) {
+                    last_rgb = Some((r, g, b));
+                    let _ = app.emit(
+                        "color-picker-hover",
+                        ColorSamplePayload {
+                            hex: hex.clone(),
+                            r,
+                            g,
+                            b,
+                            cancelled: false,
+                        },
+                    );
+                }
+
+                if system_tools::is_virtual_key_down(VK_LBUTTON) {
+                    active_flag.store(false, Ordering::SeqCst);
+                    let _ = system_tools::activate_windows_clipboard_item("eyedropper", &hex);
+                    let _ = app.emit(
+                        "color-picker-done",
+                        ColorSamplePayload {
+                            hex: hex.clone(),
+                            r,
+                            g,
+                            b,
+                            cancelled: false,
+                        },
+                    );
+                    let _ = app.emit(
+                        "island-toast",
+                        IslandToast {
+                            kind: "color".to_string(),
+                            message: format!("Copied {}", hex),
+                        },
+                    );
+                    return;
+                }
+            }
+
+            std::thread::sleep(Duration::from_millis(28));
+        }
+    });
+}
+
+#[tauri::command]
+fn cancel_color_picker(state: State<AppState>) {
+    state.picker_active.store(false, Ordering::SeqCst);
+}
+
 #[tauri::command]
 fn set_lyrics_auto_peek(app: AppHandle, state: State<AppState>, enabled: bool) {
     state.lyrics_auto_peek.store(enabled, Ordering::Relaxed);
@@ -1107,6 +1206,7 @@ fn main() {
     let lyrics_auto_peek = Arc::new(AtomicBool::new(true));
     let stack_anim_seq = Arc::new(AtomicU64::new(0));
     let lyrics_snapping = Arc::new(AtomicBool::new(false));
+    let picker_active = Arc::new(AtomicBool::new(false));
     let wifi_share = Arc::new(wifi_share::WifiShareManager::new());
 
     let media_mgr_clone = media_mgr.clone();
@@ -1143,6 +1243,7 @@ fn main() {
             lyrics_auto_peek,
             stack_anim_seq,
             lyrics_snapping,
+            picker_active,
             wifi_share,
         })
         .invoke_handler(tauri::generate_handler![
@@ -1187,6 +1288,8 @@ fn main() {
             set_bar_style,
             set_side_stack_focus,
             set_lyrics_auto_peek,
+            start_color_picker,
+            cancel_color_picker,
             dock_lyrics_to_edge,
             set_lyrics_hit_rect,
             start_wifi_shelf,

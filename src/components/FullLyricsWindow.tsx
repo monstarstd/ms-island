@@ -798,7 +798,7 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
                     />
                   )}
                   <div className="min-w-0">
-                    <h3 className="text-[11px] font-semibold truncate leading-tight" title={displayedTitle}>
+                    <h3 className="text-[12px] font-semibold truncate leading-tight" title={displayedTitle}>
                       {displayedTitle}
                     </h3>
                     <p

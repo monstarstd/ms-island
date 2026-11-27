@@ -28,7 +28,7 @@ use windows::Win32::System::Threading::{
     CreateEventW, CreateMutexW, GetSystemTimes, OpenEventW, SetEvent, WaitForSingleObject,
     EVENT_MODIFY_STATE, INFINITE,
 };
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CAPITAL};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, GetKeyState, VK_CAPITAL};
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::{
     GetClassNameW, GetCursorPos, GetForegroundWindow, GetWindowLongW, GetWindowRect,
@@ -1065,6 +1065,41 @@ extern "system" {
         pv_param: *mut std::ffi::c_void,
         f_win_ini: u32,
     ) -> i32;
+    fn GetDC(hwnd: isize) -> isize;
+    fn ReleaseDC(hwnd: isize, hdc: isize) -> i32;
+}
+
+#[link(name = "gdi32")]
+extern "system" {
+    fn GetPixel(hdc: isize, x: i32, y: i32) -> u32;
+}
+
+/// Samples the RGB pixel color directly under the Windows mouse cursor (0 extra dependencies).
+pub fn sample_cursor_pixel_rgb() -> Option<(u8, u8, u8)> {
+    unsafe {
+        let mut pt = POINT::default();
+        if GetCursorPos(&mut pt).is_err() {
+            return None;
+        }
+        let hdc = GetDC(0);
+        if hdc == 0 {
+            return None;
+        }
+        let color = GetPixel(hdc, pt.x, pt.y);
+        let _ = ReleaseDC(0, hdc);
+        if color == 0xFFFF_FFFF {
+            return None;
+        }
+        let r = (color & 0xFF) as u8;
+        let g = ((color >> 8) & 0xFF) as u8;
+        let b = ((color >> 16) & 0xFF) as u8;
+        Some((r, g, b))
+    }
+}
+
+/// Checks if a virtual key or mouse button (VK_LBUTTON=0x01, VK_RBUTTON=0x02, VK_ESCAPE=0x1B) is currently pressed.
+pub fn is_virtual_key_down(vk: i32) -> bool {
+    unsafe { (GetAsyncKeyState(vk) as u16 & 0x8000) != 0 }
 }
 
 /// Returns primary monitor desktop work area (left, top, right, bottom) excluding Windows Taskbar.

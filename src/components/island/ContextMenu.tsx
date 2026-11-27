@@ -3,6 +3,7 @@ import {
   FileText,
   Moon,
   PanelTop,
+  Pipette,
   Power,
   RectangleHorizontal,
   RefreshCw,
@@ -22,6 +23,7 @@ interface ContextMenuProps {
   onCloseMenu: () => void;
   onRefresh: () => void;
   onDockToEdge: (edge: DockSnapTarget) => void;
+  onStartColorPicker: () => void;
   onToggleBarStyle: () => void;
   onToggleLyrics: () => void;
   onToggleTheme: () => void;
@@ -38,6 +40,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = React.memo(
     onCloseMenu,
     onRefresh,
     onDockToEdge,
+    onStartColorPicker,
     onToggleBarStyle,
     onToggleLyrics,
     onToggleTheme,
@@ -132,7 +135,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = React.memo(
 
           <button
             onClick={onRefresh}
-            className={`w-full px-2.5 py-1.5 rounded-lg text-[11px] font-medium flex items-center gap-2 transition-colors ${focusRing} ${isLight ? "hover:bg-zinc-200/80" : "hover:bg-zinc-800"
+            className={`w-full px-2.5 py-1 rounded-lg text-[11px] font-medium flex items-center gap-2 transition-colors ${focusRing} ${isLight ? "hover:bg-zinc-200/80" : "hover:bg-zinc-800"
               }`}
           >
             <RefreshCw className="w-3.5 h-3.5 text-accent" />
@@ -142,9 +145,22 @@ export const ContextMenu: React.FC<ContextMenuProps> = React.memo(
           <button
             onClick={() => {
               onCloseMenu();
+              onStartColorPicker();
+            }}
+            className={`w-full px-2.5 py-1 rounded-lg text-[11px] font-medium flex items-center gap-2 transition-colors ${focusRing} ${
+              isLight ? "hover:bg-zinc-200/80" : "hover:bg-zinc-800"
+            }`}
+          >
+            <Pipette className="w-3.5 h-3.5 text-accent" />
+            <span>Screen Color Picker</span>
+          </button>
+
+          <button
+            onClick={() => {
+              onCloseMenu();
               onToggleBarStyle();
             }}
-            className={`w-full px-2.5 py-1.5 rounded-lg text-[11px] font-medium flex items-center gap-2 transition-colors ${focusRing} ${isLight ? "hover:bg-zinc-200/80" : "hover:bg-zinc-800"
+            className={`w-full px-2.5 py-1 rounded-lg text-[11px] font-medium flex items-center gap-2 transition-colors ${focusRing} ${isLight ? "hover:bg-zinc-200/80" : "hover:bg-zinc-800"
               }`}
           >
             {barStyle === "notch" ? (
@@ -160,7 +176,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = React.memo(
               onCloseMenu();
               onToggleLyrics();
             }}
-            className={`w-full px-2.5 py-1.5 rounded-lg text-[11px] font-medium flex items-center gap-2 transition-colors ${focusRing} ${isLight ? "hover:bg-zinc-200/80" : "hover:bg-zinc-800"
+            className={`w-full px-2.5 py-1 rounded-lg text-[11px] font-medium flex items-center gap-2 transition-colors ${focusRing} ${isLight ? "hover:bg-zinc-200/80" : "hover:bg-zinc-800"
               }`}
           >
             <FileText className={`w-3.5 h-3.5 ${mutedText}`} />
@@ -172,7 +188,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = React.memo(
               onCloseMenu();
               onToggleTheme();
             }}
-            className={`w-full px-2.5 py-1.5 rounded-lg text-[11px] font-medium flex items-center gap-2 transition-colors ${focusRing} ${isLight ? "hover:bg-zinc-200/80" : "hover:bg-zinc-800"
+            className={`w-full px-2.5 py-1 rounded-lg text-[11px] font-medium flex items-center gap-2 transition-colors ${focusRing} ${isLight ? "hover:bg-zinc-200/80" : "hover:bg-zinc-800"
               }`}
           >
             {isLight ? (
@@ -187,7 +203,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = React.memo(
 
           <button
             onClick={onQuit}
-            className={`w-full px-2.5 py-1.5 rounded-lg text-[11px] font-medium flex items-center gap-2 transition-colors ${focusRing} ${isLight ? "text-red-600 hover:bg-red-50" : "text-red-400 hover:bg-red-950/50"
+            className={`w-full px-2.5 py-1 rounded-lg text-[11px] font-medium flex items-center gap-2 transition-colors ${focusRing} ${isLight ? "text-red-600 hover:bg-red-50" : "text-red-400 hover:bg-red-950/50"
               }`}
           >
             <Power className="w-3.5 h-3.5" />

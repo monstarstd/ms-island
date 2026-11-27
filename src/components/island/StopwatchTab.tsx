@@ -37,7 +37,7 @@ export const StopwatchTab: React.FC<StopwatchTabProps> = React.memo(
           <div className="space-y-1.5">
             <button
               onClick={onToggle}
-              className={`w-full py-1.5 rounded-lg font-semibold text-xs transition-all ${focusRing} ${primaryBtnCls}`}
+              className={`w-full py-1.5 rounded-lg font-semibold text-[11px] transition-all ${focusRing} ${primaryBtnCls}`}
             >
               {isStopwatchRunning ? "Pause" : "Start"}
             </button>
@@ -45,14 +45,14 @@ export const StopwatchTab: React.FC<StopwatchTabProps> = React.memo(
               <button
                 onClick={onLap}
                 disabled={!isStopwatchRunning}
-                className={`py-1.5 rounded-lg text-[10px] font-medium disabled:opacity-40 transition-all border flex items-center justify-center gap-1 ${focusRing} ${subtleBtnCls}`}
+                className={`py-1.5 rounded-lg text-[11px] font-medium disabled:opacity-40 transition-all border flex items-center justify-center gap-1 ${focusRing} ${subtleBtnCls}`}
               >
                 <Flag className="w-3 h-3" />
                 <span>Lap</span>
               </button>
               <button
                 onClick={onReset}
-                className={`py-1.5 rounded-lg text-[10px] font-medium transition-all border ${focusRing} ${subtleBtnCls}`}
+                className={`py-1.5 rounded-lg text-[11px] font-medium transition-all border ${focusRing} ${subtleBtnCls}`}
               >
                 Reset
               </button>

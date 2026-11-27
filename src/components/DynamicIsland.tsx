@@ -11,6 +11,7 @@ import {
   Moon,
   Music,
   PanelTop,
+  Pipette,
   RectangleHorizontal,
   StickyNote,
   Sun,
@@ -24,7 +25,10 @@ import {
   BatteryInfo,
   ClipboardEntry,
   ClipboardSyncPayload,
+  ColorSample,
   IslandToast,
+  PomodoroPhase,
+  QuickSnippet,
   ShelfFileInfo,
   SystemStats,
   VisualizerStyle,
@@ -322,9 +326,19 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     }
   };
 
-  // 6. Countdown Timer (Wall-Clock Accurate + Native Chime + Auto-Open on Complete)
-  const [timerDuration, setTimerDuration] = useState(300);
-  const [timerRemaining, setTimerRemaining] = useState(300);
+  // 6. Countdown & Pomodoro Timer (Wall-Clock Accurate + Native Chime + Auto-Open on Complete)
+  const [timerMode, setTimerMode] = useState<"countdown" | "pomodoro">(() => {
+    const saved = localStorage.getItem("ms-island-timer-mode");
+    return saved === "pomodoro" ? "pomodoro" : "countdown";
+  });
+  const [pomodoroPhase, setPomodoroPhase] = useState<PomodoroPhase>("focus");
+  const [pomodoroCompleted, setPomodoroCompleted] = useState<number>(0);
+  const [timerDuration, setTimerDuration] = useState(() =>
+    localStorage.getItem("ms-island-timer-mode") === "pomodoro" ? 1500 : 300
+  );
+  const [timerRemaining, setTimerRemaining] = useState(() =>
+    localStorage.getItem("ms-island-timer-mode") === "pomodoro" ? 1500 : 300
+  );
   const [isTimerRunning, setIsTimerRunning] = useState(false);
   const [isTimerFinished, setIsTimerFinished] = useState(false);
   const timerEndAtRef = useRef<number>(0);
@@ -342,11 +356,48 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     if (isTimerRunning && timerRemaining === 0) {
       setIsTimerRunning(false);
       setIsTimerFinished(true);
+      if (timerMode === "pomodoro" && pomodoroPhase === "focus") {
+        setPomodoroCompleted((prev) => prev + 1);
+      }
       setActiveTab("timer");
       setIsHovered(true);
       playSoftChime();
     }
-  }, [isTimerRunning, timerRemaining]);
+  }, [isTimerRunning, timerRemaining, timerMode, pomodoroPhase]);
+
+  const handleSetTimerMode = useCallback(
+    (nextMode: "countdown" | "pomodoro") => {
+      setTimerMode(nextMode);
+      localStorage.setItem("ms-island-timer-mode", nextMode);
+      if (!isTimerRunning) {
+        setIsTimerFinished(false);
+        const sec =
+          nextMode === "pomodoro"
+            ? pomodoroPhase === "focus"
+              ? 1500
+              : pomodoroPhase === "short"
+                ? 300
+                : 900
+            : 300;
+        setTimerDuration(sec);
+        setTimerRemaining(sec);
+      }
+    },
+    [isTimerRunning, pomodoroPhase]
+  );
+
+  const handleSelectPomodoroPhase = useCallback((phase: PomodoroPhase, autoStart = false) => {
+    const sec = phase === "focus" ? 1500 : phase === "short" ? 300 : 900;
+    setPomodoroPhase(phase);
+    if (autoStart) {
+      unlockAudioContext();
+      timerEndAtRef.current = Date.now() + sec * 1000;
+    }
+    setIsTimerRunning(autoStart);
+    setIsTimerFinished(false);
+    setTimerDuration(sec);
+    setTimerRemaining(sec);
+  }, []);
 
   const handleStartPauseTimer = useCallback(() => {
     unlockAudioContext();
@@ -491,11 +542,94 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     [loadWeather]
   );
 
-  // 9. Notes & Windows Win+V Clipboard Two-Way Sync
-  const [notesMode, setNotesMode] = useState<"scratchpad" | "clipboard">("scratchpad");
+  // 9. Notes, Quick Snippets, Eyedropper Recent Colors & Windows Win+V Clipboard Sync
+  const [notesMode, setNotesMode] = useState<"scratchpad" | "snippets" | "clipboard">("scratchpad");
   const [notesText, setNotesText] = useState(() => localStorage.getItem("ms-island-notes") || "");
+  const [snippets, setSnippets] = useState<QuickSnippet[]>(() => {
+    try {
+      const saved = localStorage.getItem("ms-island-snippets");
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [recentColors, setRecentColors] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem("ms-island-recent-colors");
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [isPickingColor, setIsPickingColor] = useState(false);
+  const [pickedSample, setPickedSample] = useState<ColorSample | null>(null);
   const [clipboardHistory, setClipboardHistory] = useState<ClipboardEntry[]>([]);
   const [winClipboardSynced, setWinClipboardSynced] = useState(false);
+
+  useEffect(() => {
+    localStorage.setItem("ms-island-snippets", JSON.stringify(snippets));
+  }, [snippets]);
+
+  useEffect(() => {
+    localStorage.setItem("ms-island-recent-colors", JSON.stringify(recentColors));
+  }, [recentColors]);
+
+  useEffect(() => {
+    if (!isTauri) return;
+    let active = true;
+    let unlisteners: Array<() => void> = [];
+    Promise.all([
+      listen<ColorSample>("color-picker-hover", (e) => {
+        setPickedSample(e.payload);
+      }),
+      listen<ColorSample>("color-picker-done", (e) => {
+        setIsPickingColor(false);
+        setPickedSample(null);
+        if (!e.payload.cancelled && e.payload.hex) {
+          setRecentColors((prev) =>
+            [e.payload.hex, ...prev.filter((c) => c !== e.payload.hex)].slice(0, 8)
+          );
+        }
+      }),
+    ]).then((fns) => {
+      if (active) unlisteners = fns;
+      else fns.forEach((fn) => fn());
+    });
+    return () => {
+      active = false;
+      unlisteners.forEach((fn) => fn());
+    };
+  }, [isTauri]);
+
+  const handleAddSnippet = useCallback((label: string, text: string) => {
+    const item: QuickSnippet = {
+      id: `snip-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      label,
+      text,
+    };
+    setSnippets((prev) => [item, ...prev].slice(0, 24));
+  }, []);
+
+  const handleDeleteSnippet = useCallback((id: string) => {
+    setSnippets((prev) => prev.filter((s) => s.id !== id));
+  }, []);
+
+  const handleStartColorPicker = useCallback(async () => {
+    if (!isTauri) return;
+    if (hoverEnterTimeoutRef.current) clearTimeout(hoverEnterTimeoutRef.current);
+    if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
+    hoverEnterTimeoutRef.current = null;
+    hoverTimeoutRef.current = null;
+    setContextMenu(null);
+    setIsHovered(false);
+    setIsPickingColor(true);
+    setPickedSample(null);
+    try {
+      await invoke("start_color_picker");
+    } catch {
+      setIsPickingColor(false);
+    }
+  }, [isTauri]);
 
   const loadClipboardHistory = useCallback(async () => {
     if (!isTauri) return;
@@ -945,7 +1079,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   // 13. Snappy Physical Pill Hover Handlers (45ms open, 75ms close)
   const handleMouseEnter = () => {
     mouseInsideRef.current = true;
-    if (contextMenu) return;
+    if (contextMenu || isPickingColor) return;
     if (hoverTimeoutRef.current) {
       clearTimeout(hoverTimeoutRef.current);
       hoverTimeoutRef.current = null;
@@ -976,6 +1110,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   const idleClockAmPm = formatAmPmTime(currentTime, false);
 
   const idleWidthPx = (() => {
+    if (isPickingColor) return 338;
     if (isDragOver) return 310;
     if (showVolumeHud) return 285;
     if (toast) return Math.min(370, Math.max(255, Math.round(165 + toast.message.length * 6.5)));
@@ -1196,6 +1331,10 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
             isTimerRunning={isTimerRunning}
             isTimerFinished={isTimerFinished}
             timerRemaining={timerRemaining}
+            timerMode={timerMode}
+            pomodoroPhase={pomodoroPhase}
+            isPickingColor={isPickingColor}
+            pickedSample={pickedSample}
             isStopwatchRunning={isStopwatchRunning}
             stopwatchTimeMs={stopwatchTimeMs}
             weather={weather}
@@ -1246,7 +1385,19 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
                 })}
               </div>
 
-              <div className="flex items-center gap-1.5">
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={handleStartColorPicker}
+                  className={`h-7 w-7 flex items-center justify-center rounded-lg border transition-all ${tokens.focusRing} ${
+                    isLight
+                      ? "bg-zinc-200/80 border-zinc-300 text-zinc-800 hover:bg-zinc-300 active:scale-[0.95]"
+                      : "bg-[#141418] border-zinc-800 text-zinc-300 hover:text-white hover:bg-zinc-800 active:scale-[0.95]"
+                  }`}
+                  title="Screen Color Picker (Eyedropper)"
+                >
+                  <Pipette className="w-3.5 h-3.5" />
+                </button>
+
                 <button
                   onClick={handleToggleBarStyle}
                   className={`h-7 w-7 flex items-center justify-center rounded-lg border transition-all ${tokens.focusRing} ${
@@ -1320,6 +1471,11 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
               {activeTab === "timer" && (
                 <TimerTab
                   tokens={tokens}
+                  timerMode={timerMode}
+                  onSetTimerMode={handleSetTimerMode}
+                  pomodoroPhase={pomodoroPhase}
+                  pomodoroCompleted={pomodoroCompleted}
+                  onSelectPomodoroPhase={handleSelectPomodoroPhase}
                   timerDuration={timerDuration}
                   timerRemaining={timerRemaining}
                   isTimerRunning={isTimerRunning}
@@ -1359,6 +1515,11 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
                   onSetNotesMode={setNotesMode}
                   notesText={notesText}
                   onNotesChange={handleNotesChange}
+                  snippets={snippets}
+                  onAddSnippet={handleAddSnippet}
+                  onDeleteSnippet={handleDeleteSnippet}
+                  recentColors={recentColors}
+                  onStartColorPicker={handleStartColorPicker}
                   clipboardHistory={clipboardHistory}
                   winClipboardSynced={winClipboardSynced}
                   onCopyClipItem={handleCopyClipItem}
@@ -1420,6 +1581,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
           onCloseMenu={() => setContextMenu(null)}
           onRefresh={handleRefreshIsland}
           onDockToEdge={handleDockToEdge}
+          onStartColorPicker={handleStartColorPicker}
           onToggleBarStyle={handleToggleBarStyle}
           onToggleLyrics={onToggleLyricsWindow}
           onToggleTheme={onToggleTheme}
