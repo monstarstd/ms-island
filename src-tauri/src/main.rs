@@ -236,7 +236,10 @@ fn arrange_docked_windows_ex(app: &AppHandle, state: &AppState, animate: bool) {
     // is rendered inside CSS so both pills get equal 10px breathing room for unclipped subtle shadows!
     let top_min = (8.0 * scale).round() as i32;
     let taskbar_h = (48.0 * scale).round() as i32;
-    let usable_bottom = (screen_h - taskbar_h).max(400);
+    let usable_bottom = system_tools::get_primary_work_area()
+        .map(|(_, _, _, wb)| wb)
+        .unwrap_or(screen_h - taskbar_h)
+        .max(400);
     let mid_y = usable_bottom / 2;
     let gap = (14.0 * scale).round() as i32;
     let island_top_pad = (10.0 * scale).round() as i32;
@@ -397,7 +400,15 @@ fn arrange_docked_windows_ex(app: &AppHandle, state: &AppState, animate: bool) {
         } else {
             0
         };
-        let ly = ((usable_bottom - lyrics_h) / 2).max(top_min);
+        let same_side_bottom = (island_edge == "bottom-right" && lyrics_edge == "right")
+            || (island_edge == "bottom-left" && lyrics_edge == "left");
+        let centered_ly = ((usable_bottom - lyrics_h) / 2).max(top_min);
+        let ly = if same_side_bottom {
+            let safe_above_bottom_island = (usable_bottom - island_h - gap - lyrics_h).max(top_min);
+            centered_ly.min(safe_above_bottom_island)
+        } else {
+            centered_ly
+        };
         moves.push((lyrics_hwnd, lx, ly));
     }
     animate_windows_to(app, state, moves, animate);
@@ -884,13 +895,23 @@ fn dock_island_to_edge(app: AppHandle, state: State<AppState>, edge: String) {
         let screen_size = monitor.size();
         let screen_w = screen_size.width as i32;
         let screen_h = screen_size.height as i32;
+        let scale = monitor.scale_factor().max(1.0);
         let win_size = island_win.outer_size().ok();
         let win_w = win_size.map(|s| s.width as i32).unwrap_or(560);
         let win_h = win_size.map(|s| s.height as i32).unwrap_or(286);
 
+        let (work_left, work_top, work_right, work_bottom) = system_tools::get_primary_work_area()
+            .unwrap_or((0, 0, screen_w, screen_h - (48.0 * scale).round() as i32));
+
         let (x, y, normalized_edge) = match edge.as_str() {
-            "left" => (0, ((screen_h - win_h) / 2).max(48), "left"),
-            "right" => ((screen_w - win_w).max(0), ((screen_h - win_h) / 2).max(48), "right"),
+            "left" => (work_left, ((work_bottom - win_h) / 2).max(48), "left"),
+            "right" => ((work_right - win_w).max(work_left), ((work_bottom - win_h) / 2).max(48), "right"),
+            "bottom-left" => (work_left, (work_bottom - win_h).max(work_top), "bottom-left"),
+            "bottom-right" => (
+                (work_right - win_w).max(work_left),
+                (work_bottom - win_h).max(work_top),
+                "bottom-right",
+            ),
             _ => ((screen_w - win_w) / 2, 0, "top"),
         };
 
@@ -1290,7 +1311,7 @@ fn main() {
                             return;
                         }
 
-                        let (screen_w, screen_h, win_w, win_h) = match (
+                        let (screen_w, screen_h, scale, win_w, win_h) = match (
                             handle_drop.primary_monitor(),
                             handle_drop.get_webview_window("island"),
                         ) {
@@ -1299,18 +1320,32 @@ fn main() {
                                 (
                                     m.size().width as i32,
                                     m.size().height as i32,
+                                    m.scale_factor().max(1.0),
                                     sz.map(|s| s.width as i32).unwrap_or(560),
                                     sz.map(|s| s.height as i32).unwrap_or(286),
                                 )
                             }
-                            _ => (1920, 1080, 560, 286),
+                            _ => (1920, 1080, 1.0, 560, 286),
                         };
 
-                        let top_dist = pos.y;
-                        let left_dist = pos.x;
-                        let right_dist = screen_w - (pos.x + win_w);
+                        let (work_left, work_top, work_right, work_bottom) =
+                            system_tools::get_primary_work_area().unwrap_or((
+                                0,
+                                0,
+                                screen_w,
+                                screen_h - (48.0 * scale).round() as i32,
+                            ));
 
-                        let edge = if left_dist <= 40 && top_dist > 28 {
+                        let top_dist = pos.y - work_top;
+                        let bottom_dist = work_bottom - (pos.y + win_h);
+                        let left_dist = pos.x - work_left;
+                        let right_dist = work_right - (pos.x + win_w);
+
+                        let edge = if bottom_dist <= 48 && left_dist <= 115 {
+                            "bottom-left"
+                        } else if bottom_dist <= 48 && right_dist <= 115 {
+                            "bottom-right"
+                        } else if left_dist <= 40 && top_dist > 28 {
                             "left"
                         } else if right_dist <= 40 && top_dist > 28 {
                             "right"
@@ -1355,20 +1390,30 @@ fn main() {
                                 let _ = h_snap.emit("island-moving", false);
                             }
 
-                            let max_side_y = (screen_h - win_h - 40).max(40);
+                            let max_side_y = (work_bottom - win_h - 16).max(40);
                             let clamped_side_y = cur_y.clamp(40, max_side_y);
+                            let target_bottom_y = (work_bottom - win_h).max(work_top);
+                            let target_right_x = (work_right - win_w).max(work_left);
+
                             let target = match edge_owned.as_str() {
                                 "top" if cur_y != 0 => {
                                     Some((cur_x.clamp(0, (screen_w - win_w).max(0)), 0))
                                 }
-                                "left" if cur_x != 0 || cur_y != clamped_side_y => {
-                                    Some((0, clamped_side_y))
+                                "left" if cur_x != work_left || cur_y != clamped_side_y => {
+                                    Some((work_left, clamped_side_y))
                                 }
-                                "right"
-                                    if cur_x != (screen_w - win_w).max(0)
-                                        || cur_y != clamped_side_y =>
+                                "right" if cur_x != target_right_x || cur_y != clamped_side_y => {
+                                    Some((target_right_x, clamped_side_y))
+                                }
+                                "bottom-left"
+                                    if cur_x != work_left || cur_y != target_bottom_y =>
                                 {
-                                    Some(((screen_w - win_w).max(0), clamped_side_y))
+                                    Some((work_left, target_bottom_y))
+                                }
+                                "bottom-right"
+                                    if cur_x != target_right_x || cur_y != target_bottom_y =>
+                                {
+                                    Some((target_right_x, target_bottom_y))
                                 }
                                 _ => None,
                             };
@@ -1395,8 +1440,11 @@ fn main() {
                                 snap_guard.store(false, Ordering::Relaxed);
                             }
 
-                            // Re-check Opsi 1 vertical stack if Island settled on Left or Right
-                            if edge_owned == "left" || edge_owned == "right" {
+                            // Re-check vertical stack / anti-collision if Island settled on Left/Right or Bottom corners
+                            if matches!(
+                                edge_owned.as_str(),
+                                "left" | "right" | "bottom-left" | "bottom-right"
+                            ) {
                                 let h_stack = h_snap.clone();
                                 let _ = h_snap.run_on_main_thread(move || {
                                     if let Some(st) = h_stack.try_state::<AppState>() {

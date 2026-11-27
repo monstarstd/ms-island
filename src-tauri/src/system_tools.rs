@@ -1056,3 +1056,34 @@ pub fn get_window_origin(hwnd_raw: isize) -> Option<(i32, i32)> {
         }
     }
 }
+
+#[link(name = "user32")]
+extern "system" {
+    fn SystemParametersInfoW(
+        ui_action: u32,
+        ui_param: u32,
+        pv_param: *mut std::ffi::c_void,
+        f_win_ini: u32,
+    ) -> i32;
+}
+
+/// Returns primary monitor desktop work area (left, top, right, bottom) excluding Windows Taskbar.
+pub fn get_primary_work_area() -> Option<(i32, i32, i32, i32)> {
+    const SPI_GETWORKAREA: u32 = 0x0030;
+    unsafe {
+        let mut rect = RECT::default();
+        if SystemParametersInfoW(
+            SPI_GETWORKAREA,
+            0,
+            &mut rect as *mut RECT as *mut std::ffi::c_void,
+            0,
+        ) != 0
+            && rect.right > rect.left
+            && rect.bottom > rect.top
+        {
+            Some((rect.left, rect.top, rect.right, rect.bottom))
+        } else {
+            None
+        }
+    }
+}

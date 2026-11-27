@@ -41,7 +41,7 @@ import {
   unlockAudioContext,
 } from "./island/helpers";
 import { IdleBar } from "./island/IdleBar";
-import { ContextMenu } from "./island/ContextMenu";
+import { ContextMenu, DockPosition, DockSnapTarget } from "./island/ContextMenu";
 import { MusicTab } from "./island/MusicTab";
 import { ClockTab } from "./island/ClockTab";
 import { TimerTab } from "./island/TimerTab";
@@ -99,7 +99,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
 }) => {
   const [isHovered, setIsHovered] = useState(false);
   const [activeTab, setActiveTab] = useState<TabType>("music");
-  const [dockEdge, setDockEdge] = useState<"top" | "left" | "right" | "floating">("top");
+  const [dockEdge, setDockEdge] = useState<DockPosition>("top");
   const [isSideStacked, setIsSideStacked] = useState(false);
   const [barStyle, setBarStyle] = useState<"notch" | "island">(() => {
     const saved = localStorage.getItem("ms-island-bar-style");
@@ -133,6 +133,8 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
           e.payload === "top" ||
           e.payload === "left" ||
           e.payload === "right" ||
+          e.payload === "bottom-left" ||
+          e.payload === "bottom-right" ||
           e.payload === "floating"
         ) {
           setDockEdge(e.payload);
@@ -872,12 +874,12 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     hoverEnterTimeoutRef.current = null;
     hoverTimeoutRef.current = null;
     const x = Math.max(8, Math.min(window.innerWidth - 208, e.clientX));
-    const y = Math.max(8, Math.min(window.innerHeight - 238, e.clientY + 6));
+    const y = Math.max(8, Math.min(window.innerHeight - 266, e.clientY + 6));
     setContextMenu({ x, y });
   };
 
   const handleDockToEdge = useCallback(
-    async (edge: "top" | "left" | "right") => {
+    async (edge: DockSnapTarget) => {
       setContextMenu(null);
       setIsHovered(false);
       setActiveTab("music");
@@ -887,11 +889,17 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
           await invoke("dock_island_to_edge", { edge });
         } catch {}
       }
-      showToast(
-        "refresh",
-        edge === "left" ? "Docked Left" : edge === "right" ? "Docked Right" : "Docked Top",
-        1600
-      );
+      const label =
+        edge === "left"
+          ? "Docked Left"
+          : edge === "right"
+            ? "Docked Right"
+            : edge === "bottom-left"
+              ? "Docked Bottom Left"
+              : edge === "bottom-right"
+                ? "Docked Bottom Right"
+                : "Docked Top";
+      showToast("refresh", label, 1600);
     },
     [isTauri, showToast]
   );
@@ -990,6 +998,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   })();
 
   const isSideDock = dockEdge === "left" || dockEdge === "right";
+  const isBottomCorner = dockEdge === "bottom-left" || dockEdge === "bottom-right";
   const isIslandStyle = barStyle === "island";
   const isDetachedPill = dockEdge === "floating" || isIslandStyle;
 
@@ -1018,16 +1027,27 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
         ? isIslandStyle
           ? `justify-end ${sideVertAlign} pr-[10px]`
           : `justify-end ${sideVertAlign} pr-0`
-        : dockEdge === "floating"
-          ? "justify-center items-start pt-2"
-          : isIslandStyle
-            ? "justify-center items-start pt-[10px]"
-            : "justify-center items-start pt-0";
+        : dockEdge === "bottom-left"
+          ? isIslandStyle
+            ? "justify-start items-end pl-[10px] pb-[10px]"
+            : "justify-start items-end pl-[10px] pb-0"
+          : dockEdge === "bottom-right"
+            ? isIslandStyle
+              ? "justify-end items-end pr-[10px] pb-[10px]"
+              : "justify-end items-end pr-[10px] pb-0"
+            : dockEdge === "floating"
+              ? "justify-center items-start pt-2"
+              : isIslandStyle
+                ? "justify-center items-start pt-[10px]"
+                : "justify-center items-start pt-0";
 
   const shellShapeCls = (() => {
     if (isHovered) {
       if (dockEdge === "top" && !isIslandStyle) {
         return "rounded-t-none rounded-b-[22px] border-t-0 p-3.5";
+      }
+      if (isBottomCorner && !isIslandStyle) {
+        return "rounded-b-none rounded-t-[22px] border-b-0 p-3.5";
       }
       if (dockEdge === "left" && !isIslandStyle) {
         return "rounded-l-none rounded-r-[22px] border-l-0 p-3.5";
@@ -1039,6 +1059,9 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     }
     if (dockEdge === "top" && !isIslandStyle) {
       return "rounded-t-none rounded-b-[16px] border-t-0 px-3.5 py-1.5 cursor-pointer";
+    }
+    if (isBottomCorner && !isIslandStyle) {
+      return "rounded-b-none rounded-t-[16px] border-b-0 px-3.5 py-1.5 cursor-pointer";
     }
     if (dockEdge === "left") {
       return isIslandStyle
@@ -1075,16 +1098,22 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
         ? sideOffset
         : dockEdge === "right"
           ? Math.max(0, winW - width - sideOffset)
-          : Math.max(0, (winW - width) / 2);
+          : dockEdge === "bottom-left"
+            ? 10
+            : dockEdge === "bottom-right"
+              ? Math.max(0, winW - width - 10)
+              : Math.max(0, (winW - width) / 2);
     const y = isSideDock
       ? isSideStacked
         ? 10
         : Math.max(0, (winH - height) / 2)
-      : dockEdge === "top"
-        ? isIslandStyle
-          ? 10
-          : 0
-        : 8;
+      : isBottomCorner
+        ? Math.max(0, winH - height - (isIslandStyle ? 10 : 0))
+        : dockEdge === "top"
+          ? isIslandStyle
+            ? 10
+            : 0
+          : 8;
 
     invoke("set_island_hit_rect", {
       x,
@@ -1102,6 +1131,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     dockEdge,
     isIslandStyle,
     isSideDock,
+    isBottomCorner,
     isSideStacked,
     contextMenu,
     isDragOver,
