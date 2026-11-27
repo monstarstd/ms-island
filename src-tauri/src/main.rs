@@ -292,7 +292,6 @@ fn arrange_docked_windows_ex(app: &AppHandle, state: &AppState, animate: bool) {
         let island_idle_h_logical = match universal_style.as_str() {
             "orb" => 48.0,
             "handle" => 110.0,
-            "tile" => 156.0,
             _ => 160.0,
         };
         let lyrics_peek_h_logical = match universal_style.as_str() {
@@ -900,6 +899,30 @@ fn reset_island_position(app: AppHandle, state: State<AppState>) {
     arrange_docked_windows(&app, &state);
 }
 
+/// Smart Side-Follow: when Island moves to a left or right edge/corner, automatically bring a side-docked
+/// Lyrics window along to that same side (while leaving Floating Lyrics and Top-docked Island untouched).
+fn apply_lyrics_smart_side_follow(app: &AppHandle, state: &AppState, island_edge: &str) {
+    let desired = match island_edge {
+        "left" | "bottom-left" => Some("left"),
+        "right" | "bottom-right" => Some("right"),
+        _ => None,
+    };
+    if let Some(target_side) = desired {
+        let changed = {
+            let mut lyrics_edge = lock_safe(&state.lyrics_dock_edge);
+            if lyrics_edge.as_str() != "floating" && lyrics_edge.as_str() != target_side {
+                *lyrics_edge = target_side.to_string();
+                true
+            } else {
+                false
+            }
+        };
+        if changed {
+            let _ = app.emit("lyrics-dock-changed", target_side);
+        }
+    }
+}
+
 #[tauri::command]
 fn dock_island_to_edge(app: AppHandle, state: State<AppState>, edge: String) {
     if let (Ok(Some(monitor)), Some(island_win)) =
@@ -934,8 +957,14 @@ fn dock_island_to_edge(app: AppHandle, state: State<AppState>, edge: String) {
             y,
         }));
         let _ = app.emit("island-dock-changed", normalized_edge);
+        apply_lyrics_smart_side_follow(&app, &state, normalized_edge);
         arrange_docked_windows(&app, &state);
     }
+}
+
+#[tauri::command]
+fn get_bar_style(state: State<AppState>) -> String {
+    lock_safe(&state.bar_style).clone()
 }
 
 #[tauri::command]
@@ -944,7 +973,6 @@ fn set_bar_style(app: AppHandle, state: State<AppState>, style: String) {
         "island" => "island",
         "orb" => "orb",
         "handle" => "handle",
-        "tile" => "tile",
         _ => "notch",
     };
     *lock_safe(&state.bar_style) = normalized.to_string();
@@ -1303,6 +1331,7 @@ fn main() {
             start_file_drag_out,
             reset_island_position,
             dock_island_to_edge,
+            get_bar_style,
             set_bar_style,
             set_side_stack_focus,
             set_lyrics_auto_peek,
@@ -1561,14 +1590,16 @@ fn main() {
                                 snap_guard.store(false, Ordering::Relaxed);
                             }
 
-                            // Re-check vertical stack / anti-collision if Island settled on Left/Right or Bottom corners
+                            // Smart Side-Follow + re-check vertical stack / anti-collision if Island settled on Left/Right or Bottom corners
                             if matches!(
                                 edge_owned.as_str(),
                                 "left" | "right" | "bottom-left" | "bottom-right"
                             ) {
                                 let h_stack = h_snap.clone();
+                                let edge_for_follow = edge_owned.clone();
                                 let _ = h_snap.run_on_main_thread(move || {
                                     if let Some(st) = h_stack.try_state::<AppState>() {
+                                        apply_lyrics_smart_side_follow(&h_stack, &st, &edge_for_follow);
                                         arrange_docked_windows(&h_stack, &st);
                                     }
                                 });

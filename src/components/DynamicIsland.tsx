@@ -11,7 +11,6 @@ import {
   GripHorizontal,
   Hourglass,
   Inbox,
-  LayoutGrid,
   Minus,
   Moon,
   Music,
@@ -96,17 +95,16 @@ const TABS: { id: TabType; label: string; icon: React.ComponentType<{ className?
   { id: "system", label: "System", icon: Cpu },
 ];
 
-const BAR_STYLE_ORDER: BarStyle[] = ["notch", "island", "orb", "handle", "tile"];
+const BAR_STYLE_ORDER: BarStyle[] = ["notch", "island", "orb", "handle"];
 const BAR_STYLE_LABELS: Record<BarStyle, string> = {
   notch: "Edge Notch",
   island: "Floating Pill",
   orb: "Floating Orb",
   handle: "Edge Handle",
-  tile: "Desk Tile",
 };
 
 function parseBarStyle(val: string | null): BarStyle {
-  if (val === "island" || val === "orb" || val === "handle" || val === "tile") return val;
+  if (val === "island" || val === "orb" || val === "handle") return val;
   return "notch";
 }
 
@@ -1098,10 +1096,10 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     }
   }, [isTauri]);
 
-  // 13. Snappy Physical Pill Hover Handlers (45ms open, 75ms close; Tile expands on click so direct buttons stay steady)
+  // 13. Snappy Physical Pill Hover Handlers (45ms open, 75ms close)
   const handleMouseEnter = () => {
     mouseInsideRef.current = true;
-    if (contextMenu || isPickingColor || (barStyle === "tile" && !isHovered)) return;
+    if (contextMenu || isPickingColor) return;
     if (hoverTimeoutRef.current) {
       clearTimeout(hoverTimeoutRef.current);
       hoverTimeoutRef.current = null;
@@ -1159,7 +1157,6 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   const isEffectiveOrb = barStyle === "orb" && !isPickingColor && !isDragOver;
   const isEffectiveHandle =
     barStyle === "handle" && !isPickingColor && !isDragOver && !showVolumeHud;
-  const isEffectiveTile = barStyle === "tile";
   const isFlushEdgeStyle = barStyle === "notch" || barStyle === "handle";
   const isFloatingEdgeStyle = !isFlushEdgeStyle;
   const isDetachedPill = dockEdge === "floating" || isFloatingEdgeStyle;
@@ -1183,13 +1180,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   const splitSecondaryWidthPx = activeDownload ? 116 : isTimerRunning || isTimerFinished ? 114 : 96;
 
   // Side capsule height synced with Rust arrange_docked_windows_ex
-  const sideIdleHeightPx = isEffectiveOrb
-    ? 48
-    : isEffectiveHandle
-      ? 110
-      : isEffectiveTile
-        ? 156
-        : 160;
+  const sideIdleHeightPx = isEffectiveOrb ? 48 : isEffectiveHandle ? 110 : 160;
 
   const sideVertAlign = isSideStacked ? "items-start pt-[10px]" : "items-center";
 
@@ -1253,9 +1244,6 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
       if (isBottomCorner) return "rounded-b-none rounded-t-[6px] border-b-0 cursor-pointer";
       return "rounded-[6px] cursor-pointer";
     }
-    if (isEffectiveTile) {
-      return "rounded-[22px]";
-    }
     if (dockEdge === "top" && isFlushEdgeStyle) {
       return "rounded-t-none rounded-b-[16px] border-t-0 px-3.5 py-1.5 cursor-pointer";
     }
@@ -1283,13 +1271,11 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
         ? isSideDock
           ? 10
           : 110
-        : isEffectiveTile
-          ? 156
-          : isSplitTwin
-            ? splitMainWidthPx
-            : isSideDock
-              ? 46
-              : idleWidthPx;
+        : isSplitTwin
+          ? splitMainWidthPx
+          : isSideDock
+            ? 46
+            : idleWidthPx;
 
   const shellHeightPx = isHovered
     ? 262
@@ -1299,13 +1285,11 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
         ? isSideDock
           ? 110
           : 10
-        : isEffectiveTile
-          ? 156
-          : isSideDock
-            ? sideIdleHeightPx
-            : isDetachedPill
-              ? 38
-              : 36;
+        : isSideDock
+          ? sideIdleHeightPx
+          : isDetachedPill
+            ? 38
+            : 36;
 
   const hitWidthPx = isSplitTwin ? splitMainWidthPx + 8 + splitSecondaryWidthPx : shellWidthPx;
 
@@ -1378,8 +1362,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
       ? Math.max(0, Math.min(1, (timerDuration - timerRemaining) / timerDuration))
       : null;
 
-  const showEdgeProgressLine =
-    idleMediaProgress !== null && !isEffectiveOrb && !isEffectiveHandle && !isEffectiveTile;
+  const showEdgeProgressLine = idleMediaProgress !== null && !isEffectiveOrb && !isEffectiveHandle;
 
   return (
     <div className={`relative w-full h-full flex ${outerAlignCls}`}>
@@ -1443,10 +1426,6 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
               vertical={isSideDock}
               forceMusicSlot={isSplitTwin}
               onToggleLyricsWindow={onToggleLyricsWindow}
-              onTogglePlayPause={onTogglePlayPause}
-              onPrev={onPrev}
-              onNext={onNext}
-              onExpandTile={() => setIsHovered(true)}
               onStartDrag={onStartDrag}
             />
           ) : (
@@ -1520,10 +1499,8 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
                     <RectangleHorizontal className="w-3.5 h-3.5 text-accent" />
                   ) : barStyle === "orb" ? (
                     <Circle className="w-3.5 h-3.5 text-accent" />
-                  ) : barStyle === "handle" ? (
-                    <Minus className="w-3.5 h-3.5 text-accent" />
                   ) : (
-                    <LayoutGrid className="w-3.5 h-3.5 text-accent" />
+                    <Minus className="w-3.5 h-3.5 text-accent" />
                   )}
                 </button>
 

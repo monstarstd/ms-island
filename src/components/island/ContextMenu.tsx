@@ -34,7 +34,6 @@ const STYLE_OPTIONS: { id: BarStyle; label: string }[] = [
   { id: "island", label: "Pill" },
   { id: "orb", label: "Orb" },
   { id: "handle", label: "Handle" },
-  { id: "tile", label: "Tile" },
 ];
 
 export const ContextMenu: React.FC<ContextMenuProps> = React.memo(
@@ -143,13 +142,13 @@ export const ContextMenu: React.FC<ContextMenuProps> = React.memo(
             </div>
           </div>
 
-          {/* Universal Style Theme Picker (5 Distinct Form Factors) */}
+          {/* Universal Style Theme Picker (4 Distinct Form Factors) */}
           <div className="px-1.5 pt-0.5 pb-1 space-y-1">
             <div className={`text-[9px] font-semibold uppercase tracking-wider ${mutedText}`}>
               Style
             </div>
             <div
-              className={`grid grid-cols-5 p-0.5 rounded-lg border text-[9.5px] font-medium ${
+              className={`grid grid-cols-4 p-0.5 rounded-lg border text-[10px] font-medium ${
                 isLight ? "bg-zinc-200/80 border-zinc-300" : "bg-[#0c0c0e] border-zinc-800"
               }`}
             >

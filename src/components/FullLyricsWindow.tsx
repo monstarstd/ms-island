@@ -121,9 +121,7 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
   });
   const [barStyle, setBarStyle] = useState<BarStyle>(() => {
     const saved = localStorage.getItem("ms-island-bar-style");
-    return saved === "island" || saved === "orb" || saved === "handle" || saved === "tile"
-      ? saved
-      : "notch";
+    return saved === "island" || saved === "orb" || saved === "handle" ? saved : "notch";
   });
   const [autoPeek, setAutoPeek] = useState<boolean>(() => {
     const saved = localStorage.getItem("ms-island-lyrics-autopeek");
@@ -178,8 +176,21 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
     let active = true;
     let unlisteners: Array<() => void> = [];
 
+    const syncStyleFromBackend = () => {
+      invoke<string>("get_bar_style")
+        .then((style) => {
+          if (!active) return;
+          const normalized: BarStyle =
+            style === "island" || style === "orb" || style === "handle" ? style : "notch";
+          setBarStyle(normalized);
+          localStorage.setItem("ms-island-bar-style", normalized);
+        })
+        .catch(() => {});
+    };
+
     invoke("set_lyrics_auto_peek", { enabled: autoPeek }).catch(() => {});
     invoke("dock_lyrics_to_edge", { edge: lyricsDockEdge }).catch(() => {});
+    syncStyleFromBackend();
 
     Promise.all([
       listen<string>("lyrics-dock-changed", (e) => {
@@ -193,8 +204,7 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
           e.payload === "notch" ||
           e.payload === "island" ||
           e.payload === "orb" ||
-          e.payload === "handle" ||
-          e.payload === "tile"
+          e.payload === "handle"
         ) {
           setBarStyle(e.payload);
           localStorage.setItem("ms-island-bar-style", e.payload);
@@ -208,6 +218,7 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
           setIsPeekHovered(false);
           setIsInputFocused(false);
           setDropdownOpen(false);
+          syncStyleFromBackend();
         }
       }),
     ]).then((fns) => {
@@ -671,9 +682,7 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
           ? lyricsDockEdge === "right"
             ? "rounded-l-[18px] rounded-r-none border-r-0"
             : "rounded-r-[18px] rounded-l-none border-l-0"
-          : barStyle === "tile"
-            ? "rounded-[22px]"
-            : "rounded-[23px]"
+          : "rounded-[23px]"
     : isAcrylic
       ? "rounded-lg"
       : isNotchEdge
@@ -752,29 +761,69 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
       >
         {isCollapsed ? (
           isOrbStyle ? (
-            /* Collapsed Floating Orb Lyrics (48x48px circle matching MS Island Orb) */
-            <div
-              onClick={() => setIsPeekHovered(true)}
-              onMouseDown={(e) => {
-                if (e.button !== 0) return;
-                onStartDrag();
-              }}
-              title={
-                displayedTitle !== "Full Lyrics"
-                  ? `Hover for lyrics · ${displayedTitle}`
-                  : "Hover for lyrics"
-              }
-              className="relative w-full h-full flex flex-col items-center justify-center gap-0.5 cursor-pointer island-panel-fade"
-            >
-              <FileText className="w-4 h-4 text-accent" />
-              <span
-                className={`text-[7.5px] font-bold uppercase tracking-wider leading-none ${
-                  isLight ? "text-zinc-600" : "text-zinc-400"
-                }`}
-              >
-                {hasSynced ? "SYNC" : "LYR"}
-              </span>
-            </div>
+            /* Collapsed Floating Orb Lyrics (48x48px circle with live progress ring matching MS Island Orb) */
+            (() => {
+              const orbProgress =
+                media.isPlaying && media.durationSec > 0
+                  ? Math.max(0, Math.min(1, livePosSec / media.durationSec))
+                  : null;
+              const orbRadius = 20.5;
+              const orbCircumference = 2 * Math.PI * orbRadius;
+              const orbDashOffset =
+                orbProgress !== null ? orbCircumference * (1 - orbProgress) : 0;
+
+              return (
+                <div
+                  onClick={() => setIsPeekHovered(true)}
+                  onMouseDown={(e) => {
+                    if (e.button !== 0) return;
+                    onStartDrag();
+                  }}
+                  title={
+                    displayedTitle !== "Full Lyrics"
+                      ? `Hover for lyrics · ${displayedTitle}`
+                      : "Hover for lyrics"
+                  }
+                  className="relative w-full h-full flex flex-col items-center justify-center gap-0.5 cursor-pointer island-panel-fade"
+                >
+                  {orbProgress !== null && (
+                    <svg
+                      className="pointer-events-none absolute inset-0 w-full h-full -rotate-90"
+                      viewBox="0 0 48 48"
+                    >
+                      <circle
+                        cx="24"
+                        cy="24"
+                        r={orbRadius}
+                        fill="none"
+                        stroke={isLight ? "rgba(0,0,0,0.08)" : "rgba(255,255,255,0.09)"}
+                        strokeWidth="2"
+                      />
+                      <circle
+                        cx="24"
+                        cy="24"
+                        r={orbRadius}
+                        fill="none"
+                        stroke="var(--accent)"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeDasharray={orbCircumference}
+                        strokeDashoffset={orbDashOffset}
+                        className="transition-[stroke-dashoffset] duration-300 ease-linear"
+                      />
+                    </svg>
+                  )}
+                  <FileText className="w-3.5 h-3.5 text-accent" />
+                  <span
+                    className={`text-[7.5px] font-bold uppercase tracking-wider leading-none ${
+                      isLight ? "text-zinc-600" : "text-zinc-400"
+                    }`}
+                  >
+                    {hasSynced ? "SYNC" : "LYR"}
+                  </span>
+                </div>
+              );
+            })()
           ) : isHandleStyle ? (
             /* Collapsed Ultra-Slim Edge Handle Lyrics (10x90px matching MS Island Handle) */
             <div

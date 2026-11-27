@@ -2,15 +2,9 @@ import React from "react";
 import {
   ArrowDownToLine,
   FileText,
-  Flame,
   Hourglass,
   Inbox,
-  LayoutGrid,
   Music,
-  Pause,
-  Play,
-  SkipBack,
-  SkipForward,
   Timer as TimerIcon,
 } from "lucide-react";
 import { MediaTrack } from "../../types/media";
@@ -63,10 +57,6 @@ interface IdleBarProps {
   vertical?: boolean;
   forceMusicSlot?: boolean;
   onToggleLyricsWindow: () => void;
-  onTogglePlayPause: () => void;
-  onPrev: () => void;
-  onNext: () => void;
-  onExpandTile: () => void;
   onStartDrag: () => void;
 }
 
@@ -99,10 +89,6 @@ export const IdleBar: React.FC<IdleBarProps> = React.memo(
     vertical = false,
     forceMusicSlot = false,
     onToggleLyricsWindow,
-    onTogglePlayPause,
-    onPrev,
-    onNext,
-    onExpandTile,
     onStartDrag,
   }) => {
     const { isLight, mutedText, subtleBtnCls, focusRing } = tokens;
@@ -264,248 +250,7 @@ export const IdleBar: React.FC<IdleBarProps> = React.memo(
     }
 
     // -------------------------------------------------------------------------
-    // STYLE 3: Compact Desk Tile (156x156px squircle with direct controls)
-    // -------------------------------------------------------------------------
-    if (barStyle === "tile") {
-      const tileProgress =
-        isTimerRunning && timerProgress !== null
-          ? timerProgress
-          : media.isPlaying && mediaProgress !== null
-            ? mediaProgress
-            : 0;
-
-      return (
-        <div
-          className="w-full h-full p-2.5 flex flex-col justify-between select-none island-panel-fade"
-          onMouseDown={(e) => {
-            if (e.button !== 0) return;
-            if ((e.target as HTMLElement).closest("button")) return;
-            onStartDrag();
-          }}
-        >
-          {/* Row 1: Clock + Weather/Timer + Expand-All-Tabs Button */}
-          <div className="flex items-center justify-between gap-1">
-            <span className="text-[10.5px] font-semibold tabular-nums tracking-tight">
-              {idleClockAmPm}
-            </span>
-            <div className="flex items-center gap-1">
-              {weather && !isTimerRunning && !isPickingColor && (
-                <span className="text-[10px] font-semibold tabular-nums text-accent">
-                  {weather.temperature}°
-                </span>
-              )}
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onExpandTile();
-                }}
-                className={`p-1 rounded-md border transition-colors ${focusRing} ${subtleBtnCls}`}
-                title="Expand full 8-tab panel"
-              >
-                <LayoutGrid className="w-3 h-3" />
-              </button>
-            </div>
-          </div>
-
-          {/* Row 2: Main Context Area */}
-          {isPickingColor ? (
-            <div className="flex items-center gap-2.5 py-1">
-              <span
-                className="w-9 h-9 rounded-xl border border-white/20 flex-shrink-0"
-                style={{ backgroundColor: pickedSample?.hex || "#f97316" }}
-              />
-              <div className="min-w-0">
-                <div className="text-[11px] font-mono font-bold truncate">
-                  {pickedSample?.hex || "Picking..."}
-                </div>
-                <div className={`text-[9.5px] ${mutedText}`}>Click · Esc</div>
-              </div>
-            </div>
-          ) : isDragOver ? (
-            <div className="flex flex-col items-center justify-center text-center py-1 text-accent">
-              <Inbox className="w-5 h-5 mb-0.5" />
-              <span className="text-[10px] font-semibold">Drop to Shelf</span>
-            </div>
-          ) : isTimerRunning || isTimerFinished ? (
-            <div className="flex flex-col items-start justify-center py-0.5">
-              <span className={`text-[9.5px] font-medium flex items-center gap-1 ${mutedText}`}>
-                {timerMode === "pomodoro" ? (
-                  <Flame className="w-3 h-3 text-accent" />
-                ) : (
-                  <Hourglass className="w-3 h-3 text-accent" />
-                )}
-                <span>
-                  {isTimerFinished
-                    ? "Completed"
-                    : timerMode === "pomodoro"
-                      ? pomodoroPhase === "focus"
-                        ? "Focus"
-                        : "Break"
-                      : "Timer"}
-                </span>
-              </span>
-              <span
-                className={`text-[22px] font-mono font-bold tabular-nums leading-tight ${
-                  isTimerFinished ? "text-accent" : ""
-                }`}
-              >
-                {formatTime(timerRemaining)}
-              </span>
-            </div>
-          ) : toast ? (
-            <div className="flex items-center gap-1.5 py-2">
-              <span className="w-2 h-2 rounded-full bg-accent flex-shrink-0" />
-              <span className="text-[11px] font-medium line-clamp-2 leading-snug">
-                {toast.message}
-              </span>
-            </div>
-          ) : media.title ? (
-            <div className="grid grid-cols-[38px_1fr] items-center gap-2 min-w-0">
-              {media.thumbnail ? (
-                <img
-                  src={media.thumbnail}
-                  alt=""
-                  className={`w-[38px] h-[38px] rounded-[9px] object-cover border ${
-                    isLight ? "border-zinc-300" : "border-zinc-700/70"
-                  }`}
-                />
-              ) : (
-                <div
-                  className={`w-[38px] h-[38px] rounded-[9px] flex items-center justify-center border ${
-                    isLight ? "bg-zinc-200 border-zinc-300" : "bg-zinc-900 border-zinc-800"
-                  }`}
-                >
-                  <Music className="w-4 h-4 text-accent" />
-                </div>
-              )}
-              <div className="min-w-0">
-                <div className="text-[11px] font-semibold truncate leading-tight" title={media.title}>
-                  {media.title}
-                </div>
-                <div className={`text-[9.5px] truncate mt-0.5 ${mutedText}`}>
-                  {media.artist || media.sourceApp || "Media"}
-                </div>
-                {media.isPlaying && (
-                  <div className="mt-1">
-                    <AudioVisualizer
-                      isPlaying={media.isPlaying}
-                      style={visualizerStyle}
-                      isLight={isLight}
-                      compact
-                    />
-                  </div>
-                )}
-              </div>
-            </div>
-          ) : weather ? (
-            <div className="flex items-center gap-2.5 py-1">
-              <WeatherIcon icon={weather.icon} className="w-7 h-7 flex-shrink-0" />
-              <div className="min-w-0">
-                <div className="text-[18px] font-bold tabular-nums leading-none">
-                  {weather.temperature}°C
-                </div>
-                <div className={`text-[10px] truncate mt-1 ${mutedText}`}>{weather.city}</div>
-              </div>
-            </div>
-          ) : (
-            <div className="py-1">
-              <div className="text-[12px] font-semibold leading-tight">
-                {currentTime.toLocaleDateString("en-US", { weekday: "long" })}
-              </div>
-              <div className={`text-[10px] mt-0.5 ${mutedText}`}>
-                {currentTime.toLocaleDateString("en-US", { month: "short", day: "numeric" })}
-              </div>
-            </div>
-          )}
-
-          {/* Row 3: Slim Progress Line */}
-          <div
-            className={`w-full h-[2.5px] rounded-full overflow-hidden ${
-              isLight ? "bg-zinc-200" : "bg-zinc-800"
-            }`}
-          >
-            <div
-              className="h-full bg-accent transition-all duration-300 rounded-full"
-              style={{ width: `${Math.max(0, Math.min(100, tileProgress * 100))}%` }}
-            />
-          </div>
-
-          {/* Row 4: Direct-Click Controls (Prev · Play/Pause · Next · Lyrics) */}
-          <div className="flex items-center justify-between gap-1">
-            <div className="flex items-center gap-0.5">
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onPrev();
-                }}
-                className={`p-1 rounded-md transition-colors ${focusRing} ${
-                  isLight ? "text-zinc-700 hover:bg-zinc-200" : "text-zinc-300 hover:bg-zinc-800"
-                }`}
-                title="Previous Track"
-              >
-                <SkipBack className="w-3 h-3" />
-              </button>
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onTogglePlayPause();
-                }}
-                className={`w-6 h-6 rounded-full flex items-center justify-center transition-all active:scale-[0.94] ${focusRing} ${
-                  isLight
-                    ? "bg-zinc-900 hover:bg-zinc-800 text-white"
-                    : "bg-zinc-100 hover:bg-white text-zinc-950"
-                }`}
-                title={media.isPlaying ? "Pause" : "Play"}
-              >
-                {media.isPlaying ? (
-                  <Pause className="w-3 h-3 fill-current" />
-                ) : (
-                  <Play className="w-3 h-3 fill-current ml-0.5" />
-                )}
-              </button>
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onNext();
-                }}
-                className={`p-1 rounded-md transition-colors ${focusRing} ${
-                  isLight ? "text-zinc-700 hover:bg-zinc-200" : "text-zinc-300 hover:bg-zinc-800"
-                }`}
-                title="Next Track"
-              >
-                <SkipForward className="w-3 h-3" />
-              </button>
-            </div>
-
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                onToggleLyricsWindow();
-              }}
-              className={`px-1.5 py-0.5 rounded-md text-[9.5px] font-medium flex items-center gap-1 border transition-colors ${focusRing} ${
-                isLyricsOpen
-                  ? isLight
-                    ? "bg-zinc-900 text-white border-zinc-900"
-                    : "bg-zinc-100 text-zinc-950 border-zinc-100"
-                  : subtleBtnCls
-              }`}
-              title="Toggle Lyrics Window"
-            >
-              <FileText className="w-2.5 h-2.5" />
-              <span>Lyr</span>
-            </button>
-          </div>
-        </div>
-      );
-    }
-
-    // -------------------------------------------------------------------------
-    // STYLE 4: Vertical Side Capsule (Notch & Pill on Left / Right edges)
+    // STYLE 3: Vertical Side Capsule (Notch & Pill on Left / Right edges)
     // -------------------------------------------------------------------------
     if (vertical) {
       const dividerCls = isLight ? "bg-zinc-300" : "bg-zinc-800";
