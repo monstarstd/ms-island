@@ -71,6 +71,7 @@ struct AppState {
     auto_hide_fullscreen: Arc<AtomicBool>,
     hit_rect: Arc<Mutex<IslandHitRect>>,
     lyrics_hit_rect: Arc<Mutex<IslandHitRect>>,
+    own_hwnds: Arc<Mutex<Vec<isize>>>,
     island_dock_edge: Arc<Mutex<String>>,
     lyrics_dock_edge: Arc<Mutex<String>>,
     bar_style: Arc<Mutex<String>>,
@@ -533,61 +534,109 @@ fn set_lyrics_always_on_top(app: AppHandle, pinned: bool) -> bool {
     pinned
 }
 
-#[link(name = "dwmapi")]
-extern "system" {
-    fn DwmSetWindowAttribute(
-        hwnd: isize,
-        dw_attribute: u32,
-        pv_attribute: *const std::ffi::c_void,
-        cb_attribute: u32,
-    ) -> i32;
+#[derive(Debug, Clone, Serialize)]
+struct UpdateCheckResult {
+    #[serde(rename = "currentVersion")]
+    current_version: String,
+    #[serde(rename = "latestVersion")]
+    latest_version: String,
+    #[serde(rename = "updateAvailable")]
+    update_available: bool,
+    #[serde(rename = "releaseUrl")]
+    release_url: String,
 }
 
-/// Switches Lyrics window between clean transparent matte ("smoked") and native Windows DWM Acrylic ("acrylic")
-#[tauri::command]
-fn set_lyrics_backdrop(app: AppHandle, mode: String, is_light: bool) -> String {
-    if let Some(lyrics_win) = app.get_webview_window("lyrics") {
-        let is_acrylic = mode == "acrylic";
+fn parse_semver(v: &str) -> (u32, u32, u32) {
+    let cleaned = v.trim().trim_start_matches('v').split('-').next().unwrap_or("0.0.0");
+    let mut parts = cleaned.split('.').map(|s| s.parse::<u32>().unwrap_or(0));
+    (
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+    )
+}
 
-        if is_acrylic {
-            let tint = if is_light {
-                (244, 244, 241, 188)
-            } else {
-                (12, 12, 16, 178)
-            };
-            let _ = window_vibrancy::apply_acrylic(&lyrics_win, Some(tint));
-            // Align native Windows 11 OS corners (DWMWCP_ROUND = 2) with the UI border
-            if let Ok(hwnd) = lyrics_win.hwnd() {
-                const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
-                let pref: u32 = 2;
-                unsafe {
-                    let _ = DwmSetWindowAttribute(
-                        hwnd.0 as isize,
-                        DWMWA_WINDOW_CORNER_PREFERENCE,
-                        &pref as *const u32 as *const std::ffi::c_void,
-                        std::mem::size_of::<u32>() as u32,
-                    );
-                }
-            }
-            return "acrylic".to_string();
-        } else {
-            let _ = window_vibrancy::clear_acrylic(&lyrics_win);
-            if let Ok(hwnd) = lyrics_win.hwnd() {
-                const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
-                let pref: u32 = 0; // DWMWCP_DEFAULT
-                unsafe {
-                    let _ = DwmSetWindowAttribute(
-                        hwnd.0 as isize,
-                        DWMWA_WINDOW_CORNER_PREFERENCE,
-                        &pref as *const u32 as *const std::ffi::c_void,
-                        std::mem::size_of::<u32>() as u32,
-                    );
-                }
-            }
-            return "smoked".to_string();
-        }
+#[tauri::command]
+async fn focus_media_source(state: State<'_, AppState>) -> Result<bool, ()> {
+    let track_opt = lock_safe(&state.cached_track).clone();
+    let hwnds = lock_safe(&state.own_hwnds).clone();
+    let Some(track) = track_opt else {
+        return Ok(false);
+    };
+    Ok(tokio::task::spawn_blocking(move || {
+        system_tools::focus_media_source_window(
+            &track.raw_app_id,
+            &track.source_app,
+            &track.title,
+            &track.artist,
+            &hwnds,
+        )
+    })
+    .await
+    .unwrap_or(false))
+}
+
+#[tauri::command]
+async fn open_external_url(url: String) -> Result<bool, ()> {
+    Ok(
+        tokio::task::spawn_blocking(move || system_tools::open_external_url(&url))
+            .await
+            .unwrap_or(false),
+    )
+}
+
+#[tauri::command]
+async fn check_for_updates() -> Result<UpdateCheckResult, String> {
+    let current = env!("CARGO_PKG_VERSION").to_string();
+    let fallback_url = "https://github.com/monstarstd/ms-island/releases".to_string();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .user_agent(format!("MS-Island/{}", current))
+        .build()
+        .map_err(|e| format!("HTTP client error: {}", e))?;
+
+    let resp = client
+        .get("https://api.github.com/repos/monstarstd/ms-island/releases/latest")
+        .send()
+        .await
+        .map_err(|_| "Could not reach GitHub Releases".to_string())?;
+
+    if resp.status().as_u16() == 404 {
+        return Ok(UpdateCheckResult {
+            current_version: current.clone(),
+            latest_version: current,
+            update_available: false,
+            release_url: fallback_url,
+        });
     }
-    "smoked".to_string()
+
+    if !resp.status().is_success() {
+        return Err(format!("GitHub returned HTTP {}", resp.status().as_u16()));
+    }
+
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|_| "Invalid release response".to_string())?;
+
+    let tag = body
+        .get("tag_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&current);
+    let latest_clean = tag.trim().trim_start_matches('v').to_string();
+    let release_url = body
+        .get("html_url")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or(fallback_url);
+
+    let update_available = parse_semver(&latest_clean) > parse_semver(&current);
+    Ok(UpdateCheckResult {
+        current_version: current,
+        latest_version: latest_clean,
+        update_available,
+        release_url,
+    })
 }
 
 // -----------------------------------------------------------------------------
@@ -1266,7 +1315,8 @@ fn main() {
     let island_dock_edge_setup = island_dock_edge.clone();
     let lyrics_dock_edge_setup = lyrics_dock_edge.clone();
     let lyrics_snapping_setup = lyrics_snapping.clone();
-    let own_hwnds_setup = Arc::new(Mutex::new(Vec::<isize>::new()));
+    let own_hwnds = Arc::new(Mutex::new(Vec::<isize>::new()));
+    let own_hwnds_setup = own_hwnds.clone();
 
     tauri::Builder::default()
         .manage(AppState {
@@ -1281,6 +1331,7 @@ fn main() {
             auto_hide_fullscreen,
             hit_rect,
             lyrics_hit_rect,
+            own_hwnds,
             island_dock_edge,
             lyrics_dock_edge,
             bar_style,
@@ -1303,7 +1354,9 @@ fn main() {
             toggle_lyrics_window,
             close_lyrics_window,
             set_lyrics_always_on_top,
-            set_lyrics_backdrop,
+            focus_media_source,
+            open_external_url,
+            check_for_updates,
             toggle_play_pause,
             skip_next,
             skip_prev,

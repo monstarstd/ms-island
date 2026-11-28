@@ -2,7 +2,9 @@ use serde::{Deserialize, Serialize};
 use std::os::windows::process::CommandExt;
 use windows::core::{GUID, HSTRING, PCWSTR};
 use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
-use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS, FILETIME, HWND, POINT, RECT};
+use windows::Win32::Foundation::{
+    BOOL, CloseHandle, ERROR_ALREADY_EXISTS, FILETIME, GetLastError, HWND, LPARAM, POINT, RECT,
+};
 use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTOPRIMARY};
 use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
 use windows::Win32::Media::Audio::{
@@ -25,14 +27,17 @@ use windows::Win32::System::Registry::{
 };
 use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
 use windows::Win32::System::Threading::{
-    CreateEventW, CreateMutexW, GetSystemTimes, OpenEventW, SetEvent, WaitForSingleObject,
-    EVENT_MODIFY_STATE, INFINITE,
+    AttachThreadInput, CreateEventW, CreateMutexW, EVENT_MODIFY_STATE, GetCurrentThreadId,
+    GetSystemTimes, INFINITE, OpenEventW, OpenProcess, PROCESS_NAME_WIN32,
+    PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW, SetEvent, WaitForSingleObject,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, GetKeyState, VK_CAPITAL};
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetClassNameW, GetCursorPos, GetForegroundWindow, GetWindowLongW, GetWindowRect,
-    IsWindowVisible, GWL_STYLE, SW_SHOWNORMAL, WS_CAPTION, WS_THICKFRAME,
+    BringWindowToTop, EnumWindows, GWL_EXSTYLE, GWL_STYLE, GetClassNameW, GetCursorPos,
+    GetForegroundWindow, GetWindowLongW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
+    GetWindowThreadProcessId, IsIconic, IsWindowVisible, SW_RESTORE, SW_SHOWNORMAL,
+    SetForegroundWindow, ShowWindow, WS_CAPTION, WS_EX_TOOLWINDOW, WS_THICKFRAME,
 };
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -1120,5 +1125,234 @@ pub fn get_primary_work_area() -> Option<(i32, i32, i32, i32)> {
         } else {
             None
         }
+    }
+}
+
+pub fn open_external_url(url: &str) -> bool {
+    let trimmed = url.trim();
+    if !(trimmed.starts_with("https://") || trimmed.starts_with("http://")) {
+        return false;
+    }
+    let verb = HSTRING::from("open");
+    let wide_url = HSTRING::from(trimmed);
+    unsafe {
+        let res = ShellExecuteW(
+            HWND::default(),
+            PCWSTR(verb.as_ptr()),
+            PCWSTR(wide_url.as_ptr()),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        );
+        (res.0 as isize) > 32
+    }
+}
+
+// -----------------------------------------------------------------------------
+// 11. Back-to-Tab / Focus Active Media Source Window (YouTube, Spotify, Brave, etc.)
+// -----------------------------------------------------------------------------
+
+fn process_exe_stem_lower(hwnd: HWND) -> String {
+    unsafe {
+        let mut pid: u32 = 0;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid == 0 {
+            return String::new();
+        }
+        let Ok(handle) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
+            return String::new();
+        };
+        let mut buf = [0u16; 512];
+        let mut len = buf.len() as u32;
+        let ok = QueryFullProcessImageNameW(
+            handle,
+            PROCESS_NAME_WIN32,
+            windows::core::PWSTR(buf.as_mut_ptr()),
+            &mut len,
+        )
+        .is_ok();
+        let _ = CloseHandle(handle);
+        if ok && len > 0 {
+            let full = String::from_utf16_lossy(&buf[..len as usize]);
+            std::path::Path::new(&full)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_lowercase()
+        } else {
+            String::new()
+        }
+    }
+}
+
+struct MediaWindowSearch<'a> {
+    own_hwnds: &'a [isize],
+    expected_exes: Vec<String>,
+    title_needle: String,
+    artist_needle: String,
+    best_hwnd: isize,
+    best_score: i32,
+}
+
+unsafe extern "system" fn find_media_window_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    let ctx = &mut *(lparam.0 as *mut MediaWindowSearch);
+    let raw = hwnd.0 as isize;
+    if ctx.own_hwnds.contains(&raw) || !IsWindowVisible(hwnd).as_bool() {
+        return BOOL(1);
+    }
+
+    let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+    if (ex_style & WS_EX_TOOLWINDOW.0) != 0 {
+        return BOOL(1);
+    }
+
+    let len = GetWindowTextLengthW(hwnd);
+    if len <= 0 {
+        return BOOL(1);
+    }
+    let mut title_buf = vec![0u16; (len + 1) as usize];
+    let copied = GetWindowTextW(hwnd, &mut title_buf) as usize;
+    let title_lower = String::from_utf16_lossy(&title_buf[..copied]).to_lowercase();
+    if title_lower.is_empty() {
+        return BOOL(1);
+    }
+
+    let exe_stem = process_exe_stem_lower(hwnd);
+    let exe_matches = !exe_stem.is_empty()
+        && ctx
+            .expected_exes
+            .iter()
+            .any(|expected| exe_stem == *expected || exe_stem.contains(expected.as_str()));
+
+    let mut score: i32 = 0;
+    if exe_matches {
+        score += 100;
+    }
+
+    if !ctx.title_needle.is_empty() && title_lower.contains(&ctx.title_needle) {
+        score += 160;
+    } else if ctx.title_needle.len() >= 10 {
+        let short_needle: String = ctx.title_needle.chars().take(12).collect();
+        if title_lower.contains(&short_needle) {
+            score += 120;
+        }
+    }
+
+    if ctx.artist_needle.len() >= 3 && title_lower.contains(&ctx.artist_needle) {
+        score += 45;
+    }
+
+    if title_lower.contains("youtube")
+        || title_lower.contains("spotify")
+        || title_lower.contains("music")
+        || title_lower.contains("soundcloud")
+    {
+        score += 35;
+    }
+
+    if score > ctx.best_score {
+        ctx.best_score = score;
+        ctx.best_hwnd = raw;
+    }
+
+    BOOL(1)
+}
+
+/// Finds and reliably brings the active media player/browser window (YouTube, Spotify, Brave, etc.) to the foreground.
+pub fn focus_media_source_window(
+    raw_app_id: &str,
+    source_app: &str,
+    title: &str,
+    artist: &str,
+    own_hwnds: &[isize],
+) -> bool {
+    let raw_lower = raw_app_id.to_lowercase();
+    let src_lower = source_app.to_lowercase();
+
+    let mut expected_exes: Vec<String> = Vec::new();
+    if raw_lower.contains("brave") || src_lower.contains("brave") {
+        expected_exes.push("brave".to_string());
+    } else if raw_lower.contains("chrome") || src_lower.contains("chrome") {
+        expected_exes.push("chrome".to_string());
+    } else if raw_lower.contains("edge") || src_lower.contains("edge") {
+        expected_exes.push("msedge".to_string());
+    } else if raw_lower.contains("spotify") || src_lower.contains("spotify") {
+        expected_exes.push("spotify".to_string());
+    } else if raw_lower.contains("firefox") || src_lower.contains("firefox") {
+        expected_exes.push("firefox".to_string());
+    } else if raw_lower.contains("opera") || src_lower.contains("opera") {
+        expected_exes.push("opera".to_string());
+    } else if raw_lower.contains("vivaldi") || src_lower.contains("vivaldi") {
+        expected_exes.push("vivaldi".to_string());
+    } else if raw_lower.contains("vlc") || src_lower.contains("vlc") {
+        expected_exes.push("vlc".to_string());
+    } else if raw_lower.contains("musicbee") || src_lower.contains("musicbee") {
+        expected_exes.push("musicbee".to_string());
+    } else if raw_lower.contains("foobar") || src_lower.contains("foobar") {
+        expected_exes.push("foobar2000".to_string());
+    } else if raw_lower.contains("applemusic") || src_lower.contains("apple music") {
+        expected_exes.push("applemusic".to_string());
+        expected_exes.push("applicationframehost".to_string());
+    } else if raw_lower.contains("ytmdesktop") || src_lower.contains("youtube music") {
+        expected_exes.push("youtube music".to_string());
+        expected_exes.push("ytmdesktop".to_string());
+    } else if let Some(stem) = std::path::Path::new(&raw_lower)
+        .file_stem()
+        .and_then(|s| s.to_str())
+    {
+        if !stem.is_empty() {
+            expected_exes.push(stem.to_string());
+        }
+    }
+
+    let mut ctx = MediaWindowSearch {
+        own_hwnds,
+        expected_exes,
+        title_needle: title.trim().to_lowercase(),
+        artist_needle: artist.trim().to_lowercase(),
+        best_hwnd: 0,
+        best_score: 0,
+    };
+
+    unsafe {
+        let _ = EnumWindows(
+            Some(find_media_window_proc),
+            LPARAM(&mut ctx as *mut MediaWindowSearch as isize),
+        );
+
+        if ctx.best_hwnd == 0 || ctx.best_score < 60 {
+            return false;
+        }
+
+        let target = HWND(ctx.best_hwnd as *mut std::ffi::c_void);
+        if IsIconic(target).as_bool() {
+            let _ = ShowWindow(target, SW_RESTORE);
+        }
+
+        let fg = GetForegroundWindow();
+        let cur_tid = GetCurrentThreadId();
+        let fg_tid = if !fg.is_invalid() {
+            GetWindowThreadProcessId(fg, None)
+        } else {
+            0
+        };
+        let target_tid = GetWindowThreadProcessId(target, None);
+
+        let attached_fg = fg_tid != 0 && fg_tid != cur_tid
+            && AttachThreadInput(cur_tid, fg_tid, true).as_bool();
+        let attached_target = target_tid != 0 && target_tid != cur_tid
+            && AttachThreadInput(cur_tid, target_tid, true).as_bool();
+
+        let _ = BringWindowToTop(target);
+        let ok = SetForegroundWindow(target).as_bool();
+
+        if attached_target {
+            let _ = AttachThreadInput(cur_tid, target_tid, false);
+        }
+        if attached_fg {
+            let _ = AttachThreadInput(cur_tid, fg_tid, false);
+        }
+
+        ok || true
     }
 }

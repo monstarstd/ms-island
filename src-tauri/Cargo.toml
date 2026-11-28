@@ -1,7 +1,7 @@
 [package]
 name = "ms-island"
-version = "0.2.0"
-description = "Windows Dynamic Island with Floating Lyrics, Real Audio Visualizer, and Desktop Command Center"
+version = "1.0.0"
+description = "MS Island - Windows Dynamic Island Desktop Command Center by Monstar Studio"
 authors = ["Monstar Studio"]
 edition = "2021"
 
@@ -17,7 +17,6 @@ reqwest = { version = "0.12", features = ["json"] }
 regex = "1.10"
 url = "2.5"
 qrcode = { version = "0.14", default-features = false }
-window-vibrancy = "0.8"
 windows-core = "0.58"
 windows = { version = "0.58", features = [
     "implement",

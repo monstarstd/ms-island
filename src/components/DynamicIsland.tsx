@@ -1096,6 +1096,18 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
     }
   }, [isTauri]);
 
+  const handleFocusMediaSource = useCallback(async () => {
+    if (!isTauri) return;
+    try {
+      const ok = await invoke<boolean>("focus_media_source");
+      if (ok) {
+        showToast("media", `Back to ${media.sourceApp || "Player"}`, 1400);
+      } else {
+        showToast("media", "Player window not found", 1600);
+      }
+    } catch {}
+  }, [isTauri, media.sourceApp, showToast]);
+
   // 13. Snappy Physical Pill Hover Handlers (45ms open, 75ms close)
   const handleMouseEnter = () => {
     mouseInsideRef.current = true;
@@ -1130,26 +1142,27 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   const idleClockAmPm = formatAmPmTime(currentTime, false);
 
   const idleWidthPx = (() => {
-    if (isPickingColor) return 338;
-    if (isDragOver) return 310;
-    if (showVolumeHud) return 285;
-    if (toast) return Math.min(370, Math.max(255, Math.round(165 + toast.message.length * 6.5)));
+    const backBtnBonus = media.title ? 24 : 0;
+    if (isPickingColor) return 338 + backBtnBonus;
+    if (isDragOver) return 310 + backBtnBonus;
+    if (showVolumeHud) return 285 + backBtnBonus;
+    if (toast) return Math.min(390, Math.max(255, Math.round(165 + backBtnBonus + toast.message.length * 6.5)));
     if (activeDownload) {
       const label = `${formatSpeed(activeDownload.speedBytesPerSec)} ${formatBytes(activeDownload.bytesDownloaded)} ${activeDownload.name}`;
-      return Math.min(475, Math.max(320, Math.round(205 + label.length * 6.2)));
+      return Math.min(490, Math.max(320, Math.round(205 + backBtnBonus + label.length * 6.2)));
     }
-    if (isTimerRunning || isTimerFinished) return 275;
-    if (isStopwatchRunning) return 282;
+    if (isTimerRunning || isTimerFinished) return 275 + backBtnBonus;
+    if (isStopwatchRunning) return 282 + backBtnBonus;
     if (media.isPlaying) {
       const titleLen = (media.title || "Playing Audio").length;
       const artBonus = media.thumbnail ? 24 : 0;
-      return Math.min(504, Math.max(296, Math.round(212 + artBonus + titleLen * 6.8)));
+      return Math.min(516, Math.max(316, Math.round(234 + artBonus + titleLen * 6.8)));
     }
     if (weather) {
       const weatherText = `${weather.temperature}°C ${weather.city} · ${weather.condition}`;
-      return Math.min(365, Math.max(275, Math.round(188 + weatherText.length * 5.6)));
+      return Math.min(385, Math.max(275, Math.round(188 + backBtnBonus + weatherText.length * 5.6)));
     }
-    return 258;
+    return 258 + backBtnBonus;
   })();
 
   const isSideDock = dockEdge === "left" || dockEdge === "right";
@@ -1426,6 +1439,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
               vertical={isSideDock}
               forceMusicSlot={isSplitTwin}
               onToggleLyricsWindow={onToggleLyricsWindow}
+              onFocusMediaSource={handleFocusMediaSource}
               onStartDrag={onStartDrag}
             />
           ) : (
@@ -1549,6 +1563,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
                   onNext={onNext}
                   onSeek={onSeek}
                   onToggleLyricsWindow={onToggleLyricsWindow}
+                  onFocusMediaSource={handleFocusMediaSource}
                   onSetVolume={handleSetVolume}
                   onToggleMute={handleToggleMute}
                 />

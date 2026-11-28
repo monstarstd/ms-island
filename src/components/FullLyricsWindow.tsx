@@ -5,6 +5,7 @@ import {
   X,
   Copy,
   Check,
+  ExternalLink,
   FileText,
   Search,
   Loader2,
@@ -137,10 +138,6 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
   const peekOpenTimerRef = useRef<number | null>(null);
   const peekCloseTimerRef = useRef<number | null>(null);
 
-  const [backdropMode, setBackdropMode] = useState<"solid" | "acrylic">(() => {
-    const saved = localStorage.getItem("ms-island-lyrics-backdrop");
-    return saved === "acrylic" ? "acrylic" : "solid";
-  });
   const [fontSize, setFontSize] = useState<number>(() => {
     const saved = Number(localStorage.getItem("ms-island-lyrics-font"));
     return saved >= 12 && saved <= 20 ? saved : 13;
@@ -155,7 +152,6 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
     !dropdownOpen &&
     !isInputFocused &&
     !isSearching;
-  const isAcrylic = backdropMode === "acrylic" && !isCollapsed;
 
   // Track inner window size for smooth exact-pixel island-shell-spring morph
   useEffect(() => {
@@ -244,16 +240,6 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
       }
     };
   }, [isSideDocked, isSideStacked, isCollapsed]);
-
-  // Sync native Windows DWM Acrylic / Solid backdrop (temporarily clears Acrylic while collapsed into Peek tab)
-  useEffect(() => {
-    const isTauri = !!(window as any).__TAURI_INTERNALS__;
-    if (!isTauri) return;
-    const effectiveMode = isCollapsed ? "solid" : backdropMode;
-    invoke("set_lyrics_backdrop", { mode: effectiveMode, isLight }).catch((e) => {
-      console.error("Failed to set lyrics backdrop:", e);
-    });
-  }, [backdropMode, isCollapsed, isLight]);
 
   // Sync exact click-through hit-rect to Rust whenever collapsed into edge Pill/Notch/Orb/Handle
   useEffect(() => {
@@ -348,9 +334,11 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
     }, 100);
   };
 
-  const handleSetBackdrop = (next: "solid" | "acrylic") => {
-    setBackdropMode(next);
-    localStorage.setItem("ms-island-lyrics-backdrop", next);
+  const handleFocusMediaSource = () => {
+    const isTauri = !!(window as any).__TAURI_INTERNALS__;
+    if (isTauri) {
+      invoke("focus_media_source").catch(() => {});
+    }
   };
 
   const handleSetLyricsMode = (next: "synced" | "static") => {
@@ -630,37 +618,21 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
   const displayedTitle = customMeta?.title || media.title || "Full Lyrics";
   const displayedArtist = customMeta?.artist || media.artist || "No active media detected";
 
-  const btnCls = isAcrylic
-    ? isLight
-      ? "bg-black/[0.06] hover:bg-black/[0.12] text-zinc-900 border-black/12 active:scale-[0.97]"
-      : "bg-white/[0.08] hover:bg-white/[0.15] text-zinc-100 border-white/12 active:scale-[0.97]"
-    : isLight
-      ? "bg-zinc-200/80 hover:bg-zinc-300 text-zinc-800 border-zinc-300 active:scale-[0.97]"
-      : "bg-zinc-800/90 hover:bg-zinc-700 text-zinc-200 border-zinc-700 active:scale-[0.97]";
+  const btnCls = isLight
+    ? "bg-zinc-200/80 hover:bg-zinc-300 text-zinc-800 border-zinc-300 active:scale-[0.97]"
+    : "bg-zinc-800/90 hover:bg-zinc-700 text-zinc-200 border-zinc-700 active:scale-[0.97]";
 
-  const iconBtnCls = isAcrylic
-    ? isLight
-      ? "text-zinc-700 hover:bg-black/10"
-      : "text-zinc-300 hover:text-white hover:bg-white/10"
-    : isLight
-      ? "text-zinc-700 hover:bg-zinc-200"
-      : "text-zinc-400 hover:text-white hover:bg-zinc-800";
+  const iconBtnCls = isLight
+    ? "text-zinc-700 hover:bg-zinc-200"
+    : "text-zinc-400 hover:text-white hover:bg-zinc-800";
 
-  const pillGroupCls = isAcrylic
-    ? isLight
-      ? "bg-black/[0.06] border-black/12"
-      : "bg-white/[0.07] border-white/12"
-    : isLight
-      ? "bg-zinc-200/80 border-zinc-300"
-      : "bg-[#0c0c0e] border-zinc-800";
+  const pillGroupCls = isLight
+    ? "bg-zinc-200/80 border-zinc-300"
+    : "bg-[#0c0c0e] border-zinc-800";
 
-  const pillActiveCls = isAcrylic
-    ? isLight
-      ? "bg-white/90 text-zinc-950 font-semibold shadow-sm"
-      : "bg-white/20 text-white font-semibold"
-    : isLight
-      ? "bg-white text-zinc-950 font-semibold shadow-sm"
-      : "bg-zinc-800 text-white font-semibold";
+  const pillActiveCls = isLight
+    ? "bg-white text-zinc-950 font-semibold shadow-sm"
+    : "bg-zinc-800 text-white font-semibold";
 
   const pillIdleCls = isLight
     ? "text-zinc-600 hover:text-zinc-950"
@@ -683,46 +655,33 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
             ? "rounded-l-[18px] rounded-r-none border-r-0"
             : "rounded-r-[18px] rounded-l-none border-l-0"
           : "rounded-[23px]"
-    : isAcrylic
-      ? "rounded-lg"
-      : isNotchEdge
-        ? lyricsDockEdge === "right"
-          ? "rounded-l-[22px] rounded-r-none border-r-0"
-          : "rounded-r-[22px] rounded-l-none border-l-0"
-        : "rounded-[22px]";
-
-  const topRadiusCls = isAcrylic
-    ? "rounded-t-lg"
     : isNotchEdge
       ? lyricsDockEdge === "right"
-        ? "rounded-tl-[22px] rounded-tr-none"
-        : "rounded-tr-[22px] rounded-tl-none"
-      : "rounded-t-[22px]";
+        ? "rounded-l-[22px] rounded-r-none border-r-0"
+        : "rounded-r-[22px] rounded-l-none border-l-0"
+      : "rounded-[22px]";
 
-  const dividerCls = isAcrylic
-    ? isLight
-      ? "border-black/10"
-      : "border-white/10"
-    : isLight
-      ? "border-zinc-300"
-      : "border-zinc-800";
+  const topRadiusCls = isNotchEdge
+    ? lyricsDockEdge === "right"
+      ? "rounded-tl-[22px] rounded-tr-none"
+      : "rounded-tr-[22px] rounded-tl-none"
+    : "rounded-t-[22px]";
+
+  const dividerCls = isLight ? "border-zinc-300" : "border-zinc-800";
 
   // Inset Solid card by 10px on free edges so the tight subtle shadow NEVER gets clipped by OS window bounds!
   const sideInsetPx = isFloatingSide ? 10 : 0;
-  const freeEdgePad = isAcrylic ? 0 : 10;
-  const expandedW = isAcrylic
-    ? winSize.w
-    : Math.max(260, winSize.w - freeEdgePad - sideInsetPx);
-  const expandedH = isAcrylic ? winSize.h : Math.max(280, winSize.h - freeEdgePad * 2);
+  const freeEdgePad = 10;
+  const expandedW = Math.max(260, winSize.w - freeEdgePad - sideInsetPx);
+  const expandedH = Math.max(280, winSize.h - freeEdgePad * 2);
 
   const collapsedW = isOrbStyle ? 48 : isHandleStyle ? 10 : 46;
   const collapsedH = isOrbStyle ? 48 : isHandleStyle ? 90 : 112;
   const shellW = isCollapsed ? collapsedW : expandedW;
   const shellH = isCollapsed ? collapsedH : expandedH;
 
-  const outerPadCls = isAcrylic
-    ? ""
-    : lyricsDockEdge === "left"
+  const outerPadCls =
+    lyricsDockEdge === "left"
       ? isFloatingSide
         ? "pl-[10px] pr-[10px] py-[10px]"
         : "pl-0 pr-[10px] py-[10px]"
@@ -736,11 +695,12 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
     lyricsDockEdge === "left" ? "justify-start" : "justify-end"
   } items-center ${outerPadCls}`;
 
-  const subtleShadowCls = isAcrylic
-    ? ""
-    : isLight
-      ? "shadow-[0_3px_10px_rgba(0,0,0,0.12)]"
-      : "shadow-[0_3px_10px_rgba(0,0,0,0.34)]";
+  const subtleShadowCls = isLight
+    ? "shadow-[0_3px_10px_rgba(0,0,0,0.12)]"
+    : "shadow-[0_3px_10px_rgba(0,0,0,0.34)]";
+
+  const activeVersionTitle = activePayload.trackName || displayedTitle;
+  const activeVersionArtist = activePayload.artistName || displayedArtist;
 
   return (
     <div className={`w-full h-full flex bg-transparent select-none ${outerAlignCls}`}>
@@ -750,13 +710,9 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
         onMouseLeave={handlePeekLeave}
         style={{ width: `${shellW}px`, height: `${shellH}px` }}
         className={`relative island-shell-spring flex flex-col ${shellRadiusCls} ${subtleShadowCls} overflow-hidden border ${
-          isAcrylic
-            ? isLight
-              ? "bg-transparent border-black/15 text-zinc-900"
-              : "bg-transparent border-white/15 text-zinc-100"
-            : isLight
-              ? "bg-[#f5f5f3] border-zinc-300/90 text-zinc-900"
-              : "bg-[#0c0c0e] border-zinc-700/80 text-zinc-100"
+          isLight
+            ? "bg-[#f5f5f3] border-zinc-300/90 text-zinc-900"
+            : "bg-[#0c0c0e] border-zinc-700/80 text-zinc-100"
         }`}
       >
         {isCollapsed ? (
@@ -894,11 +850,7 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
             {/* TOP ZONE */}
             <div
               className={`relative flex-shrink-0 border-b transition-[background-color,border-color] duration-150 ${topRadiusCls} ${dividerCls} ${
-                isAcrylic
-                  ? "bg-transparent"
-                  : isLight
-                    ? "bg-[#efefec]"
-                    : "bg-[#121215]"
+                isLight ? "bg-[#efefec]" : "bg-[#121215]"
               }`}
             >
               {/* Draggable Compact Header */}
@@ -946,6 +898,16 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
                       title="Back to currently playing track"
                     >
                       <RotateCcw className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+
+                  {media.title && (
+                    <button
+                      onClick={handleFocusMediaSource}
+                      className={`p-1 rounded-md transition-all focus:outline-none focus-visible:ring-1 focus-visible:ring-accent active:scale-[0.95] ${iconBtnCls}`}
+                      title={`Back to ${media.sourceApp || "Media Player"}`}
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
                     </button>
                   )}
 
@@ -1020,11 +982,7 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
                 <form
                   onSubmit={handleManualSearch}
                   className={`flex items-center gap-1.5 px-3 py-2 transition-colors ${
-                    isAcrylic
-                      ? "bg-transparent"
-                      : isLight
-                        ? "bg-[#f3f3f0]"
-                        : "bg-[#101013]"
+                    isLight ? "bg-[#f3f3f0]" : "bg-[#101013]"
                   }`}
                 >
                   <div className="relative flex-1">
@@ -1043,20 +1001,12 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
                       onKeyDown={handleInputKeyDown}
                       placeholder="Search song or artist..."
                       className={`w-full text-[11px] rounded-lg px-2.5 py-1.5 pl-7 pr-6 focus:outline-none focus-visible:ring-1 focus-visible:ring-accent transition-colors border ${
-                        isAcrylic
-                          ? isLight
-                            ? "bg-black/[0.06] border-black/15 text-zinc-900 placeholder-zinc-600"
-                            : "bg-white/[0.08] border-white/15 text-zinc-100 placeholder-zinc-400"
-                          : isLight
-                            ? "bg-white border-zinc-300 text-zinc-900 placeholder-zinc-500"
-                            : "bg-zinc-900 border-zinc-800 text-zinc-100 placeholder-zinc-500"
+                        isLight
+                          ? "bg-white border-zinc-300 text-zinc-900 placeholder-zinc-500"
+                          : "bg-zinc-900 border-zinc-800 text-zinc-100 placeholder-zinc-500"
                       }`}
                     />
-                    <Search
-                      className={`w-3 h-3 absolute left-2.5 top-[9px] ${
-                        isAcrylic ? (isLight ? "text-zinc-600" : "text-zinc-400") : "text-zinc-500"
-                      }`}
-                    />
+                    <Search className="w-3 h-3 absolute left-2.5 top-[9px] text-zinc-500" />
                     {isSuggesting && (
                       <Loader2 className="w-3 h-3 animate-spin text-accent absolute right-2 top-[9px]" />
                     )}
@@ -1160,16 +1110,58 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
                 ref={lyricsScrollRef}
                 onWheel={pauseAutoScrollTemporarily}
                 onTouchStart={pauseAutoScrollTemporarily}
-                className={`flex-1 px-4 py-4 overflow-y-auto transition-[background-color] duration-150 ease-out ${
+                className={`flex-1 px-4 py-3 overflow-y-auto transition-[background-color] duration-150 ease-out ${
                   isSyncedActive ? "select-none" : "select-text"
-                } ${
-                  isAcrylic
-                    ? "bg-transparent"
-                    : isLight
-                      ? "bg-[#f8f8f7]"
-                      : "bg-[#0c0c0e]"
-                }`}
+                } ${isLight ? "bg-[#f8f8f7]" : "bg-[#0c0c0e]"}`}
               >
+                {/* Active Selected Lyrics Version Header (always shows which lyrics match is loaded) */}
+                {activePayload.status !== "loading" && (isSyncedActive || Boolean(displayedLyrics)) && (
+                  <div
+                    className={`mb-3 px-2.5 py-1.5 rounded-lg border flex items-center justify-between gap-2 ${
+                      isLight
+                        ? "bg-white border-zinc-200/90 text-zinc-700"
+                        : "bg-[#131317] border-zinc-800/90 text-zinc-300"
+                    }`}
+                  >
+                    <div className="min-w-0">
+                      <div className="text-[10.5px] font-semibold truncate leading-tight">
+                        {activeVersionTitle}
+                      </div>
+                      <div
+                        className={`text-[9.5px] truncate leading-tight mt-0.5 ${
+                          isLight ? "text-zinc-500" : "text-zinc-400"
+                        }`}
+                      >
+                        {activeVersionArtist}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1 flex-shrink-0">
+                      {customMeta && (
+                        <span
+                          className={`text-[8.5px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded ${
+                            isLight
+                              ? "bg-zinc-200 text-zinc-700"
+                              : "bg-zinc-800 text-zinc-300"
+                          }`}
+                        >
+                          Manual
+                        </span>
+                      )}
+                      <span
+                        className={`text-[8.5px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded ${
+                          isSyncedActive
+                            ? "bg-accent/15 text-accent"
+                            : isLight
+                              ? "bg-zinc-200 text-zinc-600"
+                              : "bg-zinc-800 text-zinc-400"
+                        }`}
+                      >
+                        {isSyncedActive ? "Synced" : "Static"}
+                      </span>
+                    </div>
+                  </div>
+                )}
+
                 {activePayload.status === "loading" ? (
                   <div className="w-full h-full flex flex-col items-center justify-center text-center py-8 px-3 gap-2">
                     <Loader2 className="w-4 h-4 animate-spin text-accent" />
@@ -1257,11 +1249,7 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
             {media.title && (
               <div
                 className={`px-3 pt-1.5 pb-1.5 border-t flex flex-col gap-1 transition-[background-color] duration-150 ${dividerCls} ${
-                  isAcrylic
-                    ? "bg-transparent"
-                    : isLight
-                      ? "bg-[#f3f3f0]"
-                      : "bg-[#101013]"
+                  isLight ? "bg-[#f3f3f0]" : "bg-[#101013]"
                 }`}
               >
                 <div className="grid grid-cols-[auto_1fr_auto] items-center gap-2">
@@ -1329,7 +1317,7 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
               </div>
             )}
 
-            {/* Footer: Backdrop (Solid / Acrylic) + Mode (Synced / Static) + Font Size */}
+            {/* Footer: Mode (Synced / Static) + Font Size */}
             <div
               onMouseDown={(e) => {
                 if (e.button !== 0) return;
@@ -1337,34 +1325,10 @@ export const FullLyricsWindow: React.FC<FullLyricsWindowProps> = ({
                 onStartDrag();
               }}
               className={`px-2.5 py-1.5 border-t flex items-center justify-between gap-1.5 text-[11px] cursor-move transition-[background-color] duration-150 ${dividerCls} ${
-                isAcrylic
-                  ? isLight
-                    ? "bg-transparent text-zinc-700"
-                    : "bg-transparent text-zinc-300"
-                  : isLight
-                    ? "bg-[#efefec] text-zinc-600"
-                    : "bg-[#121215] text-zinc-400"
+                isLight ? "bg-[#efefec] text-zinc-600" : "bg-[#121215] text-zinc-400"
               }`}
             >
               <div className="flex items-center gap-1.5">
-                <div
-                  className={`grid grid-cols-2 p-0.5 rounded-lg border text-[10px] font-medium ${pillGroupCls}`}
-                  title="Lyrics background style"
-                >
-                  {(["solid", "acrylic"] as const).map((mode) => (
-                    <button
-                      key={mode}
-                      type="button"
-                      onClick={() => handleSetBackdrop(mode)}
-                      className={`px-2 py-0.5 rounded-md capitalize transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-accent ${
-                        backdropMode === mode ? pillActiveCls : pillIdleCls
-                      }`}
-                    >
-                      {mode}
-                    </button>
-                  ))}
-                </div>
-
                 <div
                   className={`grid grid-cols-2 p-0.5 rounded-lg border text-[10px] font-medium ${pillGroupCls}`}
                   title={

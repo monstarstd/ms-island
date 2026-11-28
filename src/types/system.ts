@@ -96,3 +96,10 @@ export interface ColorSample {
   b: number;
   cancelled?: boolean;
 }
+
+export interface UpdateCheckResult {
+  currentVersion: string;
+  latestVersion: string;
+  updateAvailable: boolean;
+  releaseUrl: string;
+}

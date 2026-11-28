@@ -1,5 +1,6 @@
 import React from "react";
 import {
+  ExternalLink,
   FileText,
   Music,
   Pause,
@@ -27,6 +28,7 @@ interface MusicTabProps {
   onNext: () => void;
   onSeek: (pos: number) => void;
   onToggleLyricsWindow: () => void;
+  onFocusMediaSource: () => void;
   onSetVolume: (val: number) => void;
   onToggleMute: () => void;
 }
@@ -44,6 +46,7 @@ export const MusicTab: React.FC<MusicTabProps> = React.memo(
     onNext,
     onSeek,
     onToggleLyricsWindow,
+    onFocusMediaSource,
     onSetVolume,
     onToggleMute,
   }) => {
@@ -76,12 +79,22 @@ export const MusicTab: React.FC<MusicTabProps> = React.memo(
             </p>
           </div>
 
-          <div className="flex items-center gap-2.5">
+          <div className="flex items-center gap-1.5">
             <AudioVisualizer
               isPlaying={media.isPlaying}
               style={visualizerStyle}
               isLight={isLight}
             />
+            {media.title && (
+              <button
+                onClick={onFocusMediaSource}
+                className={`h-7 w-7 rounded-lg flex items-center justify-center transition-all border ${focusRing} ${subtleBtnCls}`}
+                title={`Back to ${media.sourceApp || "Media Player"}`}
+                aria-label={`Back to ${media.sourceApp || "Media Player"}`}
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+              </button>
+            )}
             <button
               onClick={onToggleLyricsWindow}
               className={`h-7 px-2.5 rounded-lg text-[10px] font-medium flex items-center gap-1.5 transition-all border ${focusRing} ${

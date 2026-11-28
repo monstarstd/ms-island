@@ -17,6 +17,8 @@ pub struct MediaTrackInfo {
     pub thumb_id: Option<String>,
     #[serde(rename = "sourceApp")]
     pub source_app: String,
+    #[serde(skip)]
+    pub raw_app_id: String,
     #[serde(rename = "isPlaying")]
     pub is_playing: bool,
     #[serde(rename = "positionSec")]
@@ -183,19 +185,34 @@ impl MediaManager {
     pub fn get_current_track_info(&mut self) -> Option<MediaTrackInfo> {
         let session = self.get_best_session()?;
         let app_id = session.SourceAppUserModelId().unwrap_or_default().to_string();
+        let app_lower = app_id.to_lowercase();
 
-        let source_app = if app_id.to_lowercase().contains("chrome") {
-            "Chrome".to_string()
-        } else if app_id.to_lowercase().contains("brave") {
+        let source_app = if app_lower.contains("brave") {
             "Brave".to_string()
-        } else if app_id.to_lowercase().contains("edge") {
+        } else if app_lower.contains("chrome") {
+            "Chrome".to_string()
+        } else if app_lower.contains("edge") {
             "Edge".to_string()
-        } else if app_id.to_lowercase().contains("spotify") {
+        } else if app_lower.contains("spotify") {
             "Spotify".to_string()
-        } else if app_id.to_lowercase().contains("firefox") {
+        } else if app_lower.contains("firefox") {
             "Firefox".to_string()
+        } else if app_lower.contains("opera") {
+            "Opera".to_string()
+        } else if app_lower.contains("vivaldi") {
+            "Vivaldi".to_string()
+        } else if app_lower.contains("applemusic") || app_lower.contains("apple.music") {
+            "Apple Music".to_string()
+        } else if app_lower.contains("vlc") {
+            "VLC".to_string()
+        } else if app_lower.contains("musicbee") {
+            "MusicBee".to_string()
+        } else if app_lower.contains("foobar") {
+            "foobar2000".to_string()
+        } else if app_lower.contains("ytmdesktop") || app_lower.contains("youtube") {
+            "YouTube Music".to_string()
         } else {
-            "Windows Media".to_string()
+            "Media Player".to_string()
         };
 
         let media_props = session.TryGetMediaPropertiesAsync().ok().and_then(|op| op.get().ok());
@@ -271,6 +288,7 @@ impl MediaManager {
                 None
             },
             source_app,
+            raw_app_id: app_id,
             is_playing,
             position_sec,
             duration_sec,

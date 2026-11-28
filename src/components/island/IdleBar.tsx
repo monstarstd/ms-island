@@ -1,6 +1,7 @@
 import React from "react";
 import {
   ArrowDownToLine,
+  ExternalLink,
   FileText,
   Hourglass,
   Inbox,
@@ -57,6 +58,7 @@ interface IdleBarProps {
   vertical?: boolean;
   forceMusicSlot?: boolean;
   onToggleLyricsWindow: () => void;
+  onFocusMediaSource: () => void;
   onStartDrag: () => void;
 }
 
@@ -89,6 +91,7 @@ export const IdleBar: React.FC<IdleBarProps> = React.memo(
     vertical = false,
     forceMusicSlot = false,
     onToggleLyricsWindow,
+    onFocusMediaSource,
     onStartDrag,
   }) => {
     const { isLight, mutedText, subtleBtnCls, focusRing } = tokens;
@@ -351,7 +354,15 @@ export const IdleBar: React.FC<IdleBarProps> = React.memo(
                 </span>
               </>
             ) : media.isPlaying ? (
-              <>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onFocusMediaSource();
+                }}
+                className="flex flex-col items-center gap-1 focus:outline-none"
+                title={`Back to ${media.sourceApp || "Media Player"}`}
+              >
                 {media.thumbnail ? (
                   <img
                     src={media.thumbnail}
@@ -369,7 +380,7 @@ export const IdleBar: React.FC<IdleBarProps> = React.memo(
                   isLight={isLight}
                   compact
                 />
-              </>
+              </button>
             ) : weather ? (
               <>
                 <WeatherIcon icon={weather.icon} className={`w-4 h-4 ${mutedText}`} />
@@ -554,24 +565,40 @@ export const IdleBar: React.FC<IdleBarProps> = React.memo(
           )}
         </div>
 
-        {/* Col 3: Clean Lyrics Button ONLY */}
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onToggleLyricsWindow();
-          }}
-          className={`px-2 py-0.5 rounded-md text-[10px] font-medium flex items-center gap-1 transition-all border ${focusRing} ${
-            isLyricsOpen
-              ? isLight
-                ? "bg-zinc-900 text-white border-zinc-900"
-                : "bg-zinc-100 text-zinc-950 border-zinc-100"
-              : subtleBtnCls
-          }`}
-          title="Toggle Full Lyrics Window"
-        >
-          <FileText className="w-3 h-3" />
-          <span>Lyrics</span>
-        </button>
+        {/* Col 3: Back-to-Tab + Clean Lyrics Button */}
+        <div className="flex items-center gap-1">
+          {media.title && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onFocusMediaSource();
+              }}
+              className={`p-1 rounded-md flex items-center justify-center transition-all border ${focusRing} ${subtleBtnCls}`}
+              title={`Back to ${media.sourceApp || "Media Player"}`}
+              aria-label={`Back to ${media.sourceApp || "Media Player"}`}
+            >
+              <ExternalLink className="w-3 h-3" />
+            </button>
+          )}
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleLyricsWindow();
+            }}
+            className={`px-2 py-0.5 rounded-md text-[10px] font-medium flex items-center gap-1 transition-all border ${focusRing} ${
+              isLyricsOpen
+                ? isLight
+                  ? "bg-zinc-900 text-white border-zinc-900"
+                  : "bg-zinc-100 text-zinc-950 border-zinc-100"
+                : subtleBtnCls
+            }`}
+            title="Toggle Full Lyrics Window"
+          >
+            <FileText className="w-3 h-3" />
+            <span>Lyrics</span>
+          </button>
+        </div>
       </div>
     );
   }

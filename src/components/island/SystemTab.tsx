@@ -1,6 +1,23 @@
-import React from "react";
-import { Battery, BatteryCharging, Monitor, Power, Speaker } from "lucide-react";
-import { AudioDeviceInfo, BatteryInfo, SystemStats, VolumeInfo } from "../../types/system";
+import React, { useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import {
+  Battery,
+  BatteryCharging,
+  Check,
+  Download,
+  Loader2,
+  Monitor,
+  Power,
+  RefreshCw,
+  Speaker,
+} from "lucide-react";
+import {
+  AudioDeviceInfo,
+  BatteryInfo,
+  SystemStats,
+  UpdateCheckResult,
+  VolumeInfo,
+} from "../../types/system";
 import { ScrubBar } from "../ScrubBar";
 import { IslandThemeTokens, VolumeIcon } from "./helpers";
 
@@ -38,7 +55,32 @@ export const SystemTab: React.FC<SystemTabProps> = React.memo(
     onToggleAutoHideFullscreen,
     onToggleAutostart,
   }) => {
-    const { isLight, surfaceSubtle, mutedText, focusRing } = tokens;
+    const { isLight, surfaceSubtle, mutedText, subtleBtnCls, focusRing } = tokens;
+    const [checkingUpdate, setCheckingUpdate] = useState(false);
+    const [updateInfo, setUpdateInfo] = useState<UpdateCheckResult | null>(null);
+    const [updateError, setUpdateError] = useState<string | null>(null);
+
+    const handleCheckUpdates = async () => {
+      const isTauri = !!(window as any).__TAURI_INTERNALS__;
+      if (!isTauri || checkingUpdate) return;
+      setCheckingUpdate(true);
+      setUpdateError(null);
+      try {
+        const res = await invoke<UpdateCheckResult>("check_for_updates");
+        setUpdateInfo(res);
+      } catch {
+        setUpdateError("Offline");
+      } finally {
+        setCheckingUpdate(false);
+      }
+    };
+
+    const handleOpenRelease = () => {
+      const isTauri = !!(window as any).__TAURI_INTERNALS__;
+      if (isTauri && updateInfo?.releaseUrl) {
+        invoke("open_external_url", { url: updateInfo.releaseUrl }).catch(() => {});
+      }
+    };
 
     return (
       <div className="w-full h-full grid grid-cols-12 gap-2.5 items-stretch min-h-0">
@@ -146,8 +188,8 @@ export const SystemTab: React.FC<SystemTabProps> = React.memo(
           </div>
         </div>
 
-        {/* Right (6 cols): Volume ScrubBar + Fullscreen Hide + Auto-Start */}
-        <div className="col-span-6 grid grid-rows-3 gap-1.5 min-h-0 h-full">
+        {/* Right (6 cols): Volume ScrubBar + Fullscreen Hide + Auto-Start + About/Updates */}
+        <div className="col-span-6 grid grid-rows-[auto_1fr_1fr_auto] gap-1.5 min-h-0 h-full">
           <div className={`px-2.5 py-1.5 flex flex-col justify-center gap-0.5 min-h-0 ${surfaceSubtle}`}>
             <div className="flex items-center justify-between leading-tight">
               <span className={`text-[10px] font-medium ${mutedText}`}>Master Volume</span>
@@ -175,13 +217,13 @@ export const SystemTab: React.FC<SystemTabProps> = React.memo(
             </div>
           </div>
 
-          <div className={`px-2.5 py-1.5 flex items-center justify-between gap-2 min-h-0 ${surfaceSubtle}`}>
+          <div className={`px-2.5 py-1 flex items-center justify-between gap-2 min-h-0 ${surfaceSubtle}`}>
             <div className="min-w-0 leading-tight">
-              <div className="flex items-center gap-1.5 text-[11px] font-medium">
+              <div className="flex items-center gap-1.5 text-[10.5px] font-medium">
                 <Monitor className={`w-3.5 h-3.5 flex-shrink-0 ${mutedText}`} />
                 <span className="truncate">Auto-Hide Fullscreen</span>
               </div>
-              <div className={`text-[10px] truncate mt-0.5 ${mutedText}`}>Hide during videos &amp; games</div>
+              <div className={`text-[9.5px] truncate mt-0.5 ${mutedText}`}>Hide during videos &amp; games</div>
             </div>
             <button
               onClick={onToggleAutoHideFullscreen}
@@ -198,14 +240,14 @@ export const SystemTab: React.FC<SystemTabProps> = React.memo(
             </button>
           </div>
 
-          <div className={`px-2.5 py-1.5 flex items-center justify-between gap-2 min-h-0 ${surfaceSubtle}`}>
+          <div className={`px-2.5 py-1 flex items-center justify-between gap-2 min-h-0 ${surfaceSubtle}`}>
             <div className="min-w-0 leading-tight">
-              <div className="flex items-center gap-1.5 text-[11px] font-medium">
+              <div className="flex items-center gap-1.5 text-[10.5px] font-medium">
                 <Power className={`w-3.5 h-3.5 flex-shrink-0 ${mutedText}`} />
                 <span className="truncate">Start with Windows</span>
               </div>
-              <div className={`text-[10px] truncate mt-0.5 ${mutedText}`} title="Global Shortcuts: Alt+I Island · Alt+L Lyrics · Alt+Shift+Space Play">
-                Hotkeys: Alt+I · Alt+L · Alt+Shift+Space
+              <div className={`text-[9.5px] truncate mt-0.5 ${mutedText}`} title="Global Shortcuts: Alt+I Island · Alt+L Lyrics · Alt+Shift+Space Play">
+                Alt+I · Alt+L · Alt+Shift+Space
               </div>
             </div>
             <button
@@ -222,6 +264,47 @@ export const SystemTab: React.FC<SystemTabProps> = React.memo(
             >
               <div className="w-4 h-4 rounded-full bg-white shadow-sm" />
             </button>
+          </div>
+
+          <div className={`px-2.5 py-1 flex items-center justify-between gap-2 min-h-0 ${surfaceSubtle}`}>
+            <div className="min-w-0 leading-tight">
+              <div className="text-[10px] font-semibold truncate">MS Island v1.0.0</div>
+              <div className={`text-[9px] truncate ${mutedText}`}>Monstar Studio</div>
+            </div>
+            {updateInfo?.updateAvailable ? (
+              <button
+                onClick={handleOpenRelease}
+                className={`px-2 py-0.5 rounded-md text-[9.5px] font-semibold flex items-center gap-1 bg-accent text-white hover:opacity-90 transition-opacity ${focusRing}`}
+                title={`Download v${updateInfo.latestVersion}`}
+              >
+                <Download className="w-2.5 h-2.5" />
+                <span>v{updateInfo.latestVersion}</span>
+              </button>
+            ) : (
+              <button
+                onClick={handleCheckUpdates}
+                disabled={checkingUpdate}
+                className={`px-2 py-0.5 rounded-md text-[9.5px] font-medium flex items-center gap-1 border transition-colors ${focusRing} ${subtleBtnCls}`}
+                title="Check GitHub Releases for updates"
+              >
+                {checkingUpdate ? (
+                  <Loader2 className="w-2.5 h-2.5 animate-spin text-accent" />
+                ) : updateInfo ? (
+                  <Check className="w-2.5 h-2.5 text-emerald-500" />
+                ) : (
+                  <RefreshCw className="w-2.5 h-2.5" />
+                )}
+                <span>
+                  {checkingUpdate
+                    ? "Checking"
+                    : updateError
+                      ? updateError
+                      : updateInfo
+                        ? "Up to date"
+                        : "Updates"}
+                </span>
+              </button>
+            )}
           </div>
         </div>
       </div>

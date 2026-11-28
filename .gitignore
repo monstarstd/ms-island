@@ -8,6 +8,7 @@ dist-ssr/
 # Rust & Tauri Build Artifacts
 src-tauri/target/
 **/target/
+release-dist/
 Cargo.lock
 
 # OS & Temp
