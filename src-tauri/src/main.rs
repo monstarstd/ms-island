@@ -79,6 +79,7 @@ struct AppState {
     lyrics_auto_peek: Arc<AtomicBool>,
     stack_anim_seq: Arc<AtomicU64>,
     lyrics_snapping: Arc<AtomicBool>,
+    picker_active: Arc<AtomicBool>,
     wifi_share: Arc<wifi_share::WifiShareManager>,
 }
 
@@ -223,6 +224,7 @@ fn arrange_docked_windows_ex(app: &AppHandle, state: &AppState, animate: bool) {
 
     let island_edge = lock_safe(&state.island_dock_edge).clone();
     let mut lyrics_edge = lock_safe(&state.lyrics_dock_edge).clone();
+    let universal_style = lock_safe(&state.bar_style).clone();
     let focus = if state.island_side_hovered.load(Ordering::Relaxed) {
         "island"
     } else if state.lyrics_side_hovered.load(Ordering::Relaxed) {
@@ -236,7 +238,10 @@ fn arrange_docked_windows_ex(app: &AppHandle, state: &AppState, animate: bool) {
     // is rendered inside CSS so both pills get equal 10px breathing room for unclipped subtle shadows!
     let top_min = (8.0 * scale).round() as i32;
     let taskbar_h = (48.0 * scale).round() as i32;
-    let usable_bottom = (screen_h - taskbar_h).max(400);
+    let usable_bottom = system_tools::get_primary_work_area()
+        .map(|(_, _, _, wb)| wb)
+        .unwrap_or(screen_h - taskbar_h)
+        .max(400);
     let mid_y = usable_bottom / 2;
     let gap = (14.0 * scale).round() as i32;
     let island_top_pad = (10.0 * scale).round() as i32;
@@ -284,9 +289,19 @@ fn arrange_docked_windows_ex(app: &AppHandle, state: &AppState, animate: bool) {
     let same_side = (island_edge == "right" || island_edge == "left") && lyrics_edge == island_edge;
 
     if same_side && lyrics_visible {
-        let island_idle_h = (160.0 * scale).round() as i32;
+        let island_idle_h_logical = match universal_style.as_str() {
+            "orb" => 48.0,
+            "handle" => 110.0,
+            _ => 160.0,
+        };
+        let lyrics_peek_h_logical = match universal_style.as_str() {
+            "orb" => 48.0,
+            "handle" => 90.0,
+            _ => 112.0,
+        };
+        let island_idle_h = (island_idle_h_logical * scale).round() as i32;
         let island_exp_h = (262.0 * scale).round() as i32;
-        let lyrics_peek_h = (112.0 * scale).round() as i32;
+        let lyrics_peek_h = (lyrics_peek_h_logical * scale).round() as i32;
         let peek_offset_in_win = ((lyrics_h - lyrics_peek_h) / 2).max(0);
 
         let ix = if island_edge == "right" {
@@ -397,7 +412,15 @@ fn arrange_docked_windows_ex(app: &AppHandle, state: &AppState, animate: bool) {
         } else {
             0
         };
-        let ly = ((usable_bottom - lyrics_h) / 2).max(top_min);
+        let same_side_bottom = (island_edge == "bottom-right" && lyrics_edge == "right")
+            || (island_edge == "bottom-left" && lyrics_edge == "left");
+        let centered_ly = ((usable_bottom - lyrics_h) / 2).max(top_min);
+        let ly = if same_side_bottom {
+            let safe_above_bottom_island = (usable_bottom - island_h - gap - lyrics_h).max(top_min);
+            centered_ly.min(safe_above_bottom_island)
+        } else {
+            centered_ly
+        };
         moves.push((lyrics_hwnd, lx, ly));
     }
     animate_windows_to(app, state, moves, animate);
@@ -876,6 +899,30 @@ fn reset_island_position(app: AppHandle, state: State<AppState>) {
     arrange_docked_windows(&app, &state);
 }
 
+/// Smart Side-Follow: when Island moves to a left or right edge/corner, automatically bring a side-docked
+/// Lyrics window along to that same side (while leaving Floating Lyrics and Top-docked Island untouched).
+fn apply_lyrics_smart_side_follow(app: &AppHandle, state: &AppState, island_edge: &str) {
+    let desired = match island_edge {
+        "left" | "bottom-left" => Some("left"),
+        "right" | "bottom-right" => Some("right"),
+        _ => None,
+    };
+    if let Some(target_side) = desired {
+        let changed = {
+            let mut lyrics_edge = lock_safe(&state.lyrics_dock_edge);
+            if lyrics_edge.as_str() != "floating" && lyrics_edge.as_str() != target_side {
+                *lyrics_edge = target_side.to_string();
+                true
+            } else {
+                false
+            }
+        };
+        if changed {
+            let _ = app.emit("lyrics-dock-changed", target_side);
+        }
+    }
+}
+
 #[tauri::command]
 fn dock_island_to_edge(app: AppHandle, state: State<AppState>, edge: String) {
     if let (Ok(Some(monitor)), Some(island_win)) =
@@ -884,13 +931,23 @@ fn dock_island_to_edge(app: AppHandle, state: State<AppState>, edge: String) {
         let screen_size = monitor.size();
         let screen_w = screen_size.width as i32;
         let screen_h = screen_size.height as i32;
+        let scale = monitor.scale_factor().max(1.0);
         let win_size = island_win.outer_size().ok();
         let win_w = win_size.map(|s| s.width as i32).unwrap_or(560);
         let win_h = win_size.map(|s| s.height as i32).unwrap_or(286);
 
+        let (work_left, work_top, work_right, work_bottom) = system_tools::get_primary_work_area()
+            .unwrap_or((0, 0, screen_w, screen_h - (48.0 * scale).round() as i32));
+
         let (x, y, normalized_edge) = match edge.as_str() {
-            "left" => (0, ((screen_h - win_h) / 2).max(48), "left"),
-            "right" => ((screen_w - win_w).max(0), ((screen_h - win_h) / 2).max(48), "right"),
+            "left" => (work_left, ((work_bottom - win_h) / 2).max(48), "left"),
+            "right" => ((work_right - win_w).max(work_left), ((work_bottom - win_h) / 2).max(48), "right"),
+            "bottom-left" => (work_left, (work_bottom - win_h).max(work_top), "bottom-left"),
+            "bottom-right" => (
+                (work_right - win_w).max(work_left),
+                (work_bottom - win_h).max(work_top),
+                "bottom-right",
+            ),
             _ => ((screen_w - win_w) / 2, 0, "top"),
         };
 
@@ -900,13 +957,24 @@ fn dock_island_to_edge(app: AppHandle, state: State<AppState>, edge: String) {
             y,
         }));
         let _ = app.emit("island-dock-changed", normalized_edge);
+        apply_lyrics_smart_side_follow(&app, &state, normalized_edge);
         arrange_docked_windows(&app, &state);
     }
 }
 
 #[tauri::command]
+fn get_bar_style(state: State<AppState>) -> String {
+    lock_safe(&state.bar_style).clone()
+}
+
+#[tauri::command]
 fn set_bar_style(app: AppHandle, state: State<AppState>, style: String) {
-    let normalized = if style == "island" { "island" } else { "notch" };
+    let normalized = match style.as_str() {
+        "island" => "island",
+        "orb" => "orb",
+        "handle" => "handle",
+        _ => "notch",
+    };
     *lock_safe(&state.bar_style) = normalized.to_string();
     let _ = app.emit("bar-style-changed", normalized);
     arrange_docked_windows(&app, &state);
@@ -939,6 +1007,104 @@ fn set_side_stack_focus(app: AppHandle, state: State<AppState>, source: String, 
     if next != prev {
         arrange_docked_windows_ex(&app, &state, true);
     }
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ColorSamplePayload {
+    hex: String,
+    r: u8,
+    g: u8,
+    b: u8,
+    cancelled: bool,
+}
+
+#[tauri::command]
+fn start_color_picker(app: AppHandle, state: State<AppState>) {
+    if state.picker_active.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let active_flag = state.picker_active.clone();
+    std::thread::spawn(move || {
+        const VK_LBUTTON: i32 = 0x01;
+        const VK_RBUTTON: i32 = 0x02;
+        const VK_ESCAPE: i32 = 0x1B;
+
+        // Wait briefly for the initial trigger click to be released
+        let mut wait_ms = 0u32;
+        while system_tools::is_virtual_key_down(VK_LBUTTON) && wait_ms < 600 {
+            std::thread::sleep(Duration::from_millis(20));
+            wait_ms += 20;
+        }
+        std::thread::sleep(Duration::from_millis(60));
+
+        let mut last_rgb: Option<(u8, u8, u8)> = None;
+
+        while active_flag.load(Ordering::SeqCst) {
+            if system_tools::is_virtual_key_down(VK_ESCAPE)
+                || system_tools::is_virtual_key_down(VK_RBUTTON)
+            {
+                active_flag.store(false, Ordering::SeqCst);
+                let _ = app.emit(
+                    "color-picker-done",
+                    ColorSamplePayload {
+                        hex: String::new(),
+                        r: 0,
+                        g: 0,
+                        b: 0,
+                        cancelled: true,
+                    },
+                );
+                return;
+            }
+
+            if let Some((r, g, b)) = system_tools::sample_cursor_pixel_rgb() {
+                let hex = format!("#{:02X}{:02X}{:02X}", r, g, b);
+                if last_rgb != Some((r, g, b)) {
+                    last_rgb = Some((r, g, b));
+                    let _ = app.emit(
+                        "color-picker-hover",
+                        ColorSamplePayload {
+                            hex: hex.clone(),
+                            r,
+                            g,
+                            b,
+                            cancelled: false,
+                        },
+                    );
+                }
+
+                if system_tools::is_virtual_key_down(VK_LBUTTON) {
+                    active_flag.store(false, Ordering::SeqCst);
+                    let _ = system_tools::activate_windows_clipboard_item("eyedropper", &hex);
+                    let _ = app.emit(
+                        "color-picker-done",
+                        ColorSamplePayload {
+                            hex: hex.clone(),
+                            r,
+                            g,
+                            b,
+                            cancelled: false,
+                        },
+                    );
+                    let _ = app.emit(
+                        "island-toast",
+                        IslandToast {
+                            kind: "color".to_string(),
+                            message: format!("Copied {}", hex),
+                        },
+                    );
+                    return;
+                }
+            }
+
+            std::thread::sleep(Duration::from_millis(28));
+        }
+    });
+}
+
+#[tauri::command]
+fn cancel_color_picker(state: State<AppState>) {
+    state.picker_active.store(false, Ordering::SeqCst);
 }
 
 #[tauri::command]
@@ -1086,6 +1252,7 @@ fn main() {
     let lyrics_auto_peek = Arc::new(AtomicBool::new(true));
     let stack_anim_seq = Arc::new(AtomicU64::new(0));
     let lyrics_snapping = Arc::new(AtomicBool::new(false));
+    let picker_active = Arc::new(AtomicBool::new(false));
     let wifi_share = Arc::new(wifi_share::WifiShareManager::new());
 
     let media_mgr_clone = media_mgr.clone();
@@ -1122,6 +1289,7 @@ fn main() {
             lyrics_auto_peek,
             stack_anim_seq,
             lyrics_snapping,
+            picker_active,
             wifi_share,
         })
         .invoke_handler(tauri::generate_handler![
@@ -1163,9 +1331,12 @@ fn main() {
             start_file_drag_out,
             reset_island_position,
             dock_island_to_edge,
+            get_bar_style,
             set_bar_style,
             set_side_stack_focus,
             set_lyrics_auto_peek,
+            start_color_picker,
+            cancel_color_picker,
             dock_lyrics_to_edge,
             set_lyrics_hit_rect,
             start_wifi_shelf,
@@ -1290,7 +1461,7 @@ fn main() {
                             return;
                         }
 
-                        let (screen_w, screen_h, win_w, win_h) = match (
+                        let (screen_w, screen_h, scale, win_w, win_h) = match (
                             handle_drop.primary_monitor(),
                             handle_drop.get_webview_window("island"),
                         ) {
@@ -1299,18 +1470,32 @@ fn main() {
                                 (
                                     m.size().width as i32,
                                     m.size().height as i32,
+                                    m.scale_factor().max(1.0),
                                     sz.map(|s| s.width as i32).unwrap_or(560),
                                     sz.map(|s| s.height as i32).unwrap_or(286),
                                 )
                             }
-                            _ => (1920, 1080, 560, 286),
+                            _ => (1920, 1080, 1.0, 560, 286),
                         };
 
-                        let top_dist = pos.y;
-                        let left_dist = pos.x;
-                        let right_dist = screen_w - (pos.x + win_w);
+                        let (work_left, work_top, work_right, work_bottom) =
+                            system_tools::get_primary_work_area().unwrap_or((
+                                0,
+                                0,
+                                screen_w,
+                                screen_h - (48.0 * scale).round() as i32,
+                            ));
 
-                        let edge = if left_dist <= 40 && top_dist > 28 {
+                        let top_dist = pos.y - work_top;
+                        let bottom_dist = work_bottom - (pos.y + win_h);
+                        let left_dist = pos.x - work_left;
+                        let right_dist = work_right - (pos.x + win_w);
+
+                        let edge = if bottom_dist <= 48 && left_dist <= 115 {
+                            "bottom-left"
+                        } else if bottom_dist <= 48 && right_dist <= 115 {
+                            "bottom-right"
+                        } else if left_dist <= 40 && top_dist > 28 {
                             "left"
                         } else if right_dist <= 40 && top_dist > 28 {
                             "right"
@@ -1355,20 +1540,30 @@ fn main() {
                                 let _ = h_snap.emit("island-moving", false);
                             }
 
-                            let max_side_y = (screen_h - win_h - 40).max(40);
+                            let max_side_y = (work_bottom - win_h - 16).max(40);
                             let clamped_side_y = cur_y.clamp(40, max_side_y);
+                            let target_bottom_y = (work_bottom - win_h).max(work_top);
+                            let target_right_x = (work_right - win_w).max(work_left);
+
                             let target = match edge_owned.as_str() {
                                 "top" if cur_y != 0 => {
                                     Some((cur_x.clamp(0, (screen_w - win_w).max(0)), 0))
                                 }
-                                "left" if cur_x != 0 || cur_y != clamped_side_y => {
-                                    Some((0, clamped_side_y))
+                                "left" if cur_x != work_left || cur_y != clamped_side_y => {
+                                    Some((work_left, clamped_side_y))
                                 }
-                                "right"
-                                    if cur_x != (screen_w - win_w).max(0)
-                                        || cur_y != clamped_side_y =>
+                                "right" if cur_x != target_right_x || cur_y != clamped_side_y => {
+                                    Some((target_right_x, clamped_side_y))
+                                }
+                                "bottom-left"
+                                    if cur_x != work_left || cur_y != target_bottom_y =>
                                 {
-                                    Some(((screen_w - win_w).max(0), clamped_side_y))
+                                    Some((work_left, target_bottom_y))
+                                }
+                                "bottom-right"
+                                    if cur_x != target_right_x || cur_y != target_bottom_y =>
+                                {
+                                    Some((target_right_x, target_bottom_y))
                                 }
                                 _ => None,
                             };
@@ -1395,11 +1590,16 @@ fn main() {
                                 snap_guard.store(false, Ordering::Relaxed);
                             }
 
-                            // Re-check Opsi 1 vertical stack if Island settled on Left or Right
-                            if edge_owned == "left" || edge_owned == "right" {
+                            // Smart Side-Follow + re-check vertical stack / anti-collision if Island settled on Left/Right or Bottom corners
+                            if matches!(
+                                edge_owned.as_str(),
+                                "left" | "right" | "bottom-left" | "bottom-right"
+                            ) {
                                 let h_stack = h_snap.clone();
+                                let edge_for_follow = edge_owned.clone();
                                 let _ = h_snap.run_on_main_thread(move || {
                                     if let Some(st) = h_stack.try_state::<AppState>() {
+                                        apply_lyrics_smart_side_follow(&h_stack, &st, &edge_for_follow);
                                         arrange_docked_windows(&h_stack, &st);
                                     }
                                 });

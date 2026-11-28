@@ -2,28 +2,39 @@ import React from "react";
 import {
   FileText,
   Moon,
-  PanelTop,
+  Pipette,
   Power,
-  RectangleHorizontal,
   RefreshCw,
   Sun,
 } from "lucide-react";
+import { BarStyle } from "../../types/system";
 import { IslandThemeTokens } from "./helpers";
+
+export type DockPosition = "top" | "left" | "right" | "bottom-left" | "bottom-right" | "floating";
+export type DockSnapTarget = "top" | "left" | "right" | "bottom-left" | "bottom-right";
 
 interface ContextMenuProps {
   position: { x: number; y: number };
   tokens: IslandThemeTokens;
   isLyricsOpen: boolean;
-  barStyle: "notch" | "island";
-  dockEdge: "top" | "left" | "right" | "floating";
+  barStyle: BarStyle;
+  dockEdge: DockPosition;
   onCloseMenu: () => void;
   onRefresh: () => void;
-  onDockToEdge: (edge: "top" | "left" | "right") => void;
-  onToggleBarStyle: () => void;
+  onDockToEdge: (edge: DockSnapTarget) => void;
+  onStartColorPicker: () => void;
+  onSetBarStyle: (style: BarStyle) => void;
   onToggleLyrics: () => void;
   onToggleTheme: () => void;
   onQuit: () => void;
 }
+
+const STYLE_OPTIONS: { id: BarStyle; label: string }[] = [
+  { id: "notch", label: "Notch" },
+  { id: "island", label: "Pill" },
+  { id: "orb", label: "Orb" },
+  { id: "handle", label: "Handle" },
+];
 
 export const ContextMenu: React.FC<ContextMenuProps> = React.memo(
   ({
@@ -35,7 +46,8 @@ export const ContextMenu: React.FC<ContextMenuProps> = React.memo(
     onCloseMenu,
     onRefresh,
     onDockToEdge,
-    onToggleBarStyle,
+    onStartColorPicker,
+    onSetBarStyle,
     onToggleLyrics,
     onToggleTheme,
     onQuit,
@@ -53,16 +65,16 @@ export const ContextMenu: React.FC<ContextMenuProps> = React.memo(
           }}
         />
         <div
-          className={`context-menu-pop fixed z-[100] w-[198px] p-1 rounded-xl border shadow-2xl select-none ${
+          className={`context-menu-pop fixed z-[100] w-[212px] p-1 rounded-xl border shadow-2xl select-none ${
             isLight
               ? "bg-[#f8f8f7] border-zinc-300 text-zinc-900 shadow-black/15"
               : "bg-[#121216] border-zinc-800 text-zinc-100 shadow-black/90"
           }`}
           style={{ left: `${position.x}px`, top: `${position.y}px` }}
         >
-          {/* Quick Dock Edge Selector */}
-          <div className="px-1.5 pt-1 pb-1.5">
-            <div className={`text-[9px] font-semibold uppercase tracking-wider mb-1 ${mutedText}`}>
+          {/* Dock Position (5 Snap Targets) */}
+          <div className="px-1.5 pt-1 pb-1 space-y-1">
+            <div className={`text-[9px] font-semibold uppercase tracking-wider ${mutedText}`}>
               Dock Position
             </div>
             <div
@@ -94,13 +106,83 @@ export const ContextMenu: React.FC<ContextMenuProps> = React.memo(
                 );
               })}
             </div>
+            <div
+              className={`grid grid-cols-2 p-0.5 rounded-lg border text-[10px] font-medium ${
+                isLight ? "bg-zinc-200/80 border-zinc-300" : "bg-[#0c0c0e] border-zinc-800"
+              }`}
+            >
+              {(
+                [
+                  { id: "bottom-left", label: "Bottom Left" },
+                  { id: "bottom-right", label: "Bottom Right" },
+                ] as const
+              ).map(({ id, label }) => {
+                const active = dockEdge === id;
+                return (
+                  <button
+                    key={id}
+                    onClick={() => {
+                      onCloseMenu();
+                      onDockToEdge(id);
+                    }}
+                    className={`py-0.5 rounded-md transition-colors ${focusRing} ${
+                      active
+                        ? isLight
+                          ? "bg-white text-zinc-950 font-semibold shadow-sm"
+                          : "bg-zinc-800 text-white font-semibold"
+                        : isLight
+                          ? "text-zinc-600 hover:text-zinc-950"
+                          : "text-zinc-400 hover:text-white"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
           </div>
 
-          <div className={`mb-1 h-px ${isLight ? "bg-zinc-200" : "bg-zinc-800"}`} />
+          {/* Universal Style Theme Picker (4 Distinct Form Factors) */}
+          <div className="px-1.5 pt-0.5 pb-1 space-y-1">
+            <div className={`text-[9px] font-semibold uppercase tracking-wider ${mutedText}`}>
+              Style
+            </div>
+            <div
+              className={`grid grid-cols-4 p-0.5 rounded-lg border text-[10px] font-medium ${
+                isLight ? "bg-zinc-200/80 border-zinc-300" : "bg-[#0c0c0e] border-zinc-800"
+              }`}
+            >
+              {STYLE_OPTIONS.map(({ id, label }) => {
+                const active = barStyle === id;
+                return (
+                  <button
+                    key={id}
+                    onClick={() => {
+                      onCloseMenu();
+                      onSetBarStyle(id);
+                    }}
+                    className={`py-0.5 rounded-md transition-colors ${focusRing} ${
+                      active
+                        ? isLight
+                          ? "bg-white text-zinc-950 font-semibold shadow-sm"
+                          : "bg-zinc-800 text-white font-semibold"
+                        : isLight
+                          ? "text-zinc-600 hover:text-zinc-950"
+                          : "text-zinc-400 hover:text-white"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className={`my-0.5 h-px ${isLight ? "bg-zinc-200" : "bg-zinc-800"}`} />
 
           <button
             onClick={onRefresh}
-            className={`w-full px-2.5 py-1.5 rounded-lg text-[11px] font-medium flex items-center gap-2 transition-colors ${focusRing} ${
+            className={`w-full px-2.5 py-1 rounded-lg text-[11px] font-medium flex items-center gap-2 transition-colors ${focusRing} ${
               isLight ? "hover:bg-zinc-200/80" : "hover:bg-zinc-800"
             }`}
           >
@@ -111,18 +193,14 @@ export const ContextMenu: React.FC<ContextMenuProps> = React.memo(
           <button
             onClick={() => {
               onCloseMenu();
-              onToggleBarStyle();
+              onStartColorPicker();
             }}
-            className={`w-full px-2.5 py-1.5 rounded-lg text-[11px] font-medium flex items-center gap-2 transition-colors ${focusRing} ${
+            className={`w-full px-2.5 py-1 rounded-lg text-[11px] font-medium flex items-center gap-2 transition-colors ${focusRing} ${
               isLight ? "hover:bg-zinc-200/80" : "hover:bg-zinc-800"
             }`}
           >
-            {barStyle === "notch" ? (
-              <RectangleHorizontal className={`w-3.5 h-3.5 ${mutedText}`} />
-            ) : (
-              <PanelTop className={`w-3.5 h-3.5 ${mutedText}`} />
-            )}
-            <span>{barStyle === "notch" ? "Floating Pill Style" : "Edge Notch Style"}</span>
+            <Pipette className="w-3.5 h-3.5 text-accent" />
+            <span>Screen Color Picker</span>
           </button>
 
           <button
@@ -130,7 +208,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = React.memo(
               onCloseMenu();
               onToggleLyrics();
             }}
-            className={`w-full px-2.5 py-1.5 rounded-lg text-[11px] font-medium flex items-center gap-2 transition-colors ${focusRing} ${
+            className={`w-full px-2.5 py-1 rounded-lg text-[11px] font-medium flex items-center gap-2 transition-colors ${focusRing} ${
               isLight ? "hover:bg-zinc-200/80" : "hover:bg-zinc-800"
             }`}
           >
@@ -143,7 +221,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = React.memo(
               onCloseMenu();
               onToggleTheme();
             }}
-            className={`w-full px-2.5 py-1.5 rounded-lg text-[11px] font-medium flex items-center gap-2 transition-colors ${focusRing} ${
+            className={`w-full px-2.5 py-1 rounded-lg text-[11px] font-medium flex items-center gap-2 transition-colors ${focusRing} ${
               isLight ? "hover:bg-zinc-200/80" : "hover:bg-zinc-800"
             }`}
           >
@@ -155,11 +233,11 @@ export const ContextMenu: React.FC<ContextMenuProps> = React.memo(
             <span>{isLight ? "Dark Mode" : "Light Mode"}</span>
           </button>
 
-          <div className={`my-1 h-px ${isLight ? "bg-zinc-200" : "bg-zinc-800"}`} />
+          <div className={`my-0.5 h-px ${isLight ? "bg-zinc-200" : "bg-zinc-800"}`} />
 
           <button
             onClick={onQuit}
-            className={`w-full px-2.5 py-1.5 rounded-lg text-[11px] font-medium flex items-center gap-2 transition-colors ${focusRing} ${
+            className={`w-full px-2.5 py-1 rounded-lg text-[11px] font-medium flex items-center gap-2 transition-colors ${focusRing} ${
               isLight ? "text-red-600 hover:bg-red-50" : "text-red-400 hover:bg-red-950/50"
             }`}
           >

@@ -90,7 +90,7 @@ export const SystemTab: React.FC<SystemTabProps> = React.memo(
                   style={{ width: `${Math.min(100, sysStats.ramPercent)}%` }}
                 />
               </div>
-              <div className={`text-[9px] font-mono tabular-nums leading-none ${mutedText}`}>
+              <div className={`text-[10px] font-mono tabular-nums leading-none ${mutedText}`}>
                 {sysStats.ramUsedGb.toFixed(1)}/{sysStats.ramTotalGb.toFixed(0)} GB
               </div>
             </div>
@@ -204,7 +204,7 @@ export const SystemTab: React.FC<SystemTabProps> = React.memo(
                 <Power className={`w-3.5 h-3.5 flex-shrink-0 ${mutedText}`} />
                 <span className="truncate">Start with Windows</span>
               </div>
-              <div className={`text-[9px] truncate mt-0.5 ${mutedText}`} title="Global Shortcuts: Alt+I Island · Alt+L Lyrics · Alt+Shift+Space Play">
+              <div className={`text-[10px] truncate mt-0.5 ${mutedText}`} title="Global Shortcuts: Alt+I Island · Alt+L Lyrics · Alt+Shift+Space Play">
                 Hotkeys: Alt+I · Alt+L · Alt+Shift+Space
               </div>
             </div>

@@ -37,13 +37,13 @@ export const ClockTab: React.FC<ClockTabProps> = React.memo(({ tokens, currentTi
       <div className="col-span-5 py-1.5 px-1 flex flex-col justify-between">
         <div>
           <div className={`text-[10px] font-medium ${mutedText}`}>Local Time</div>
-          <div className="text-[22px] font-mono font-bold tabular-nums tracking-tight mt-1 leading-none">
+          <div className="text-[24px] font-mono font-bold tabular-nums tracking-tight mt-1.5 leading-none">
             {formatAmPmTime(currentTime, true)}
           </div>
         </div>
 
         <div className="space-y-0.5">
-          <div className="text-xs font-semibold">
+          <div className="text-[13px] font-semibold leading-tight">
             {currentTime.toLocaleDateString("en-US", { weekday: "long" })}
           </div>
           <div className={`text-[11px] ${mutedText}`}>

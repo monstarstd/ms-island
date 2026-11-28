@@ -207,7 +207,7 @@ export const ShelfTab: React.FC<ShelfTabProps> = React.memo(
                 className={`w-full h-full flex flex-col items-center justify-center text-center px-6 ${mutedText}`}
               >
                 <Inbox className="w-5 h-5 mb-1 opacity-70" />
-                <p className="text-xs font-medium">Drop files, download, or receive via Wi-Fi</p>
+                <p className="text-[11px] font-medium">Drop files, download, or receive via Wi-Fi</p>
                 <p className="text-[10px] mt-0.5">
                   Drag any item out to WhatsApp, Figma, Gmail, or Explorer.
                 </p>
@@ -308,7 +308,7 @@ export const ShelfTab: React.FC<ShelfTabProps> = React.memo(
                   <Wifi className="w-4 h-4 text-accent" />
                 </div>
                 <div>
-                  <div className="text-xs font-semibold">Cross-Device Wi-Fi Shelf</div>
+                  <div className="text-[13px] font-semibold">Cross-Device Wi-Fi Shelf</div>
                   <p className={`text-[10px] mt-0.5 max-w-[340px] ${mutedText}`}>
                     Scan QR from Android, iPhone, or Mac on the same Wi-Fi to send photos, files, or
                     clipboard text straight into Shelf. Server stays OFF when unused.
@@ -342,7 +342,7 @@ export const ShelfTab: React.FC<ShelfTabProps> = React.memo(
                   <div>
                     <div className="flex items-center gap-1.5">
                       <span className="w-2 h-2 rounded-full bg-emerald-500 flex-shrink-0" />
-                      <span className="text-xs font-semibold">Scan QR on Phone</span>
+                      <span className="text-[13px] font-semibold">Scan QR on Phone</span>
                     </div>
                     <p className={`text-[10px] mt-0.5 leading-snug ${mutedText}`}>
                       Same Wi-Fi required. Session token is embedded in the QR for private access.

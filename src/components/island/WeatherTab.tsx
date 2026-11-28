@@ -30,7 +30,7 @@ export const WeatherTab: React.FC<WeatherTabProps> = React.memo(
           <div className="flex items-start justify-between">
             <div className="flex items-center gap-2.5">
               <WeatherIcon icon={weather?.icon || "cloud-sun"} className="w-7 h-7" />
-              <span className="text-3xl font-bold tabular-nums leading-none">
+              <span className="text-[34px] font-bold tabular-nums leading-none tracking-tight">
                 {weather ? `${weather.temperature}°` : "--°"}
               </span>
             </div>
@@ -47,7 +47,7 @@ export const WeatherTab: React.FC<WeatherTabProps> = React.memo(
           </div>
 
           <div>
-            <div className="text-sm font-semibold truncate">
+            <div className="text-[13px] font-semibold truncate leading-tight">
               {weather ? weather.city : loading ? "Loading weather..." : "Weather Offline"}
             </div>
             <div className={`text-[11px] truncate mt-0.5 ${mutedText}`}>
